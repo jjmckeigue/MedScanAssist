@@ -56,6 +56,31 @@ medscanassist/
    - Docker: `docker compose up --build backend`
 4. Visit API docs at [http://localhost:8000/docs](http://localhost:8000/docs)
 
+## Training (Transfer Learning)
+
+Training uses transfer learning by default:
+
+1. initialize a pretrained backbone (`DenseNet121` by default, `ResNet50` optional)
+2. freeze backbone and train only the classifier head
+3. unfreeze full network and fine-tune at a lower learning rate
+4. save best checkpoint by validation accuracy
+
+Run training:
+
+- `py -3 -m pip install -r backend/requirements-train.txt`
+- `py -3 -m backend.training.train --epochs-head 3 --epochs-finetune 2`
+
+Outputs:
+
+- checkpoint: `backend/checkpoints/best_model.pt`
+- metrics table: `backend/artifacts/training_metrics.csv`
+- training curves image: `backend/artifacts/training_curves.png`
+
+## API Smoke Tests
+
+- `py -3 -m pip install -r backend/requirements-dev.txt`
+- `py -3 -m pytest backend/tests -q`
+
 ## Dataset Ingestion (Kaggle v1)
 
 Use this expected v1 layout under `data/raw/chest_xray/`:
@@ -97,7 +122,7 @@ scores until trained weights are present.
 
 ## Next Steps
 
-1. Implement final training loop in `backend/training/train.py`
-2. Export best checkpoint to `backend/checkpoints/best_model.pt`
-3. Replace placeholder inference in model service
+1. Train and export your first checkpoint from Kaggle dataset
+2. Validate checkpoint-backed inference mode on `/predict` and `/gradcam`
+3. Add evaluation metrics (confusion matrix, ROC-AUC) to the training pipeline
 4. Connect React upload UI to `/predict` and `/gradcam`
