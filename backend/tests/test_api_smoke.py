@@ -34,6 +34,20 @@ def test_predict_success() -> None:
     assert payload["inference_mode"] in {"checkpoint", "placeholder"}
 
 
+def test_predict_threshold_override_changes_response_threshold() -> None:
+    image_bytes = make_test_png_bytes()
+    response = client.post("/predict?threshold=0.9", files={"file": ("sample.png", image_bytes, "image/png")})
+    assert response.status_code == 200
+    payload = response.json()
+    assert abs(payload["threshold"] - 0.9) < 1e-9
+
+
+def test_predict_invalid_threshold_rejected() -> None:
+    image_bytes = make_test_png_bytes()
+    response = client.post("/predict?threshold=1.5", files={"file": ("sample.png", image_bytes, "image/png")})
+    assert response.status_code == 422
+
+
 def test_gradcam_success() -> None:
     image_bytes = make_test_png_bytes()
     response = client.post("/gradcam", files={"file": ("sample.png", image_bytes, "image/png")})
@@ -41,6 +55,15 @@ def test_gradcam_success() -> None:
     payload = response.json()
     assert payload["heatmap_base64"]
     assert payload["inference_mode"] in {"checkpoint", "placeholder"}
+
+
+def test_model_info_success() -> None:
+    response = client.get("/model-info")
+    assert response.status_code == 200
+    payload = response.json()
+    assert "inference_mode" in payload
+    assert "model_arch" in payload
+    assert "class_names" in payload
 
 
 def test_predict_rejects_non_image() -> None:
