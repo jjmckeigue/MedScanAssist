@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     class_names: str = Field(default="normal,pneumonia", alias="CLASS_NAMES")
     image_size: int = Field(default=224, alias="IMAGE_SIZE")
     default_threshold: float = Field(default=0.5, alias="DEFAULT_THRESHOLD")
+    require_checkpoint: bool = Field(default=False, alias="REQUIRE_CHECKPOINT")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
 

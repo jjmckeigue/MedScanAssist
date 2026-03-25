@@ -19,10 +19,17 @@ def main() -> None:
     test_ds = build_imagefolder_dataset(dataset_root, "test", transforms_map["test"])
     test_loader = DataLoader(test_ds, batch_size=16, shuffle=False, num_workers=0)
 
-    model = models.densenet121(weights=None)
-    model.classifier = torch.nn.Linear(model.classifier.in_features, len(test_ds.classes))
-
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    arch = str(checkpoint.get("arch", settings.model_arch)).lower()
+    class_names = checkpoint.get("class_names") or checkpoint.get("classes") or test_ds.classes
+
+    if arch == "resnet50":
+        model = models.resnet50(weights=None)
+        model.fc = torch.nn.Linear(model.fc.in_features, len(class_names))
+    else:
+        model = models.densenet121(weights=None)
+        model.classifier = torch.nn.Linear(model.classifier.in_features, len(class_names))
+
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
 
@@ -36,6 +43,7 @@ def main() -> None:
             total += labels.size(0)
 
     accuracy = (correct / total) if total else 0.0
+    print(f"Model arch: {arch}")
     print(f"Test accuracy: {accuracy:.4f}")
 
 

@@ -2,6 +2,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from backend.app.schemas import GradCamResponse
 from backend.app.services.gradcam_service import gradcam_service
+from backend.app.services.model_service import InvalidImageError
 
 router = APIRouter(tags=["explainability"])
 
@@ -15,5 +16,8 @@ async def gradcam(file: UploadFile = File(...)) -> GradCamResponse:
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Uploaded image is empty.")
 
-    result = gradcam_service.build_overlay_base64(image_bytes)
+    try:
+        result = gradcam_service.build_overlay_base64(image_bytes)
+    except InvalidImageError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return GradCamResponse(**result)

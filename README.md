@@ -49,12 +49,63 @@ medscanassist/
 1. Copy environment template:
    - `cp .env.example .env` (macOS/Linux)
    - `Copy-Item .env.example .env` (PowerShell)
-2. Place dataset in `data/raw/chest_xray/` (see Dataset section).
-3. Run backend:
-   - Local: `pip install -r backend/requirements.txt` then
-     `uvicorn backend.app.main:app --reload --port 8000`
+2. Create and use a project virtual environment (recommended):
+   - macOS/Linux:
+     - `python3 -m venv .venv`
+     - `source .venv/bin/activate`
+   - PowerShell:
+     - `py -3 -m venv .venv`
+     - `.\.venv\Scripts\Activate.ps1`
+3. Place dataset in `data/raw/chest_xray/` (see Dataset section).
+4. Run backend:
+   - Local: `python -m pip install -r backend/requirements.txt` then
+     `python -m uvicorn backend.app.main:app --reload --port 8000`
    - Docker: `docker compose up --build backend`
-4. Visit API docs at [http://localhost:8000/docs](http://localhost:8000/docs)
+5. Visit API docs at [http://localhost:8000/docs](http://localhost:8000/docs)
+
+## Training (Transfer Learning)
+
+Training uses transfer learning by default:
+
+1. initialize a pretrained backbone (`DenseNet121` by default, `ResNet50` optional)
+2. freeze backbone and train only the classifier head
+3. unfreeze full network and fine-tune at a lower learning rate
+4. save best checkpoint by validation accuracy
+
+Run training:
+
+- `python -m pip install -r backend/requirements-train.txt`
+- `python -m backend.training.train --epochs-head 3 --epochs-finetune 2`
+
+Outputs:
+
+- checkpoint: `backend/checkpoints/best_model.pt`
+- checkpoint metadata includes: `best_epoch`, `best_val_acc`, `best_val_loss`
+- metrics table: `backend/artifacts/training_metrics.csv`
+- training curves image: `backend/artifacts/training_curves.png`
+- confusion matrix: `backend/artifacts/confusion_matrix.csv` and `backend/artifacts/confusion_matrix.png`
+- ROC curve: `backend/artifacts/roc_curve.csv` and `backend/artifacts/roc_curve.png`
+- PR curve: `backend/artifacts/pr_curve.csv` and `backend/artifacts/pr_curve.png`
+- calibration: `backend/artifacts/calibration_curve.csv`, `backend/artifacts/calibration_curve.png`, and `backend/artifacts/calibration_report.txt`
+- threshold tuning: `backend/artifacts/threshold_analysis.csv`, `backend/artifacts/threshold_analysis.png`, and `backend/artifacts/threshold_recommendations.txt`
+
+## API Smoke Tests
+
+- `python -m pip install -r backend/requirements-dev.txt`
+- `python -m pytest backend/tests -q`
+
+## PowerShell Shortcuts
+
+From repo root:
+
+- Start backend quickly (auto-venv + deps + `.env`): `.\scripts\dev.ps1`
+- Run tests quickly (auto-venv + deps): `.\scripts\test.ps1`
+
+Optional:
+
+- Skip reinstall step when dependencies are already installed:
+  - `.\scripts\dev.ps1 -SkipInstall`
+  - `.\scripts\test.ps1 -SkipInstall`
 
 ## Dataset Ingestion (Kaggle v1)
 
@@ -89,7 +140,9 @@ Raw dataset files are ignored by git via `.gitignore`.
 ## API Endpoints (v1)
 
 - `GET /health` - service health check
+- `GET /model-info` - returns model/checkpoint metadata and runtime mode
 - `POST /predict` - predicts class probabilities from an uploaded CXR image
+  - optional query: `threshold` (0.0 to 1.0) for decision-threshold override
 - `POST /gradcam` - returns Grad-CAM overlay image (base64 PNG) for uploaded CXR
 
 Current model-serving logic is scaffolded and defaults to deterministic placeholder
@@ -97,7 +150,7 @@ scores until trained weights are present.
 
 ## Next Steps
 
-1. Implement final training loop in `backend/training/train.py`
-2. Export best checkpoint to `backend/checkpoints/best_model.pt`
-3. Replace placeholder inference in model service
+1. Train and export your first checkpoint from Kaggle dataset
+2. Validate checkpoint-backed inference mode on `/predict` and `/gradcam`
+3. Add evaluation metrics (confusion matrix, ROC-AUC) to the training pipeline
 4. Connect React upload UI to `/predict` and `/gradcam`
