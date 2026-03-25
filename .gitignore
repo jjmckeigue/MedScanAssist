@@ -16,6 +16,8 @@ Scripts/
 share/
 Include/
 pyvenv.cfg
+!scripts/
+!scripts/*.ps1
 
 # Build artifacts
 build/
