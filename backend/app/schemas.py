@@ -24,3 +24,16 @@ class GradCamResponse(BaseModel):
     inference_mode: str
     model_arch: str
     checkpoint_loaded: bool
+
+
+class ModelInfoResponse(BaseModel):
+    inference_mode: str
+    model_arch: str
+    checkpoint_loaded: bool
+    class_names: list[str]
+    image_size: int
+    default_threshold: float
+    checkpoint_path: str
+    best_epoch: int | None = None
+    best_val_acc: float | None = None
+    best_val_loss: float | None = None

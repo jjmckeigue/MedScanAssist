@@ -35,6 +35,7 @@ class ModelService:
         self._image_size = self.default_image_size
         self._model: nn.Module | None = None
         self._transform = self._build_transform(self._image_size)
+        self._checkpoint_meta: dict[str, float | int | str] = {}
 
     @staticmethod
     def _build_transform(image_size: int) -> transforms.Compose:
@@ -106,6 +107,15 @@ class ModelService:
         self._image_size = ckpt_image_size
         self._transform = self._build_transform(self._image_size)
         self._checkpoint_loaded = True
+        self._checkpoint_meta = {
+            "best_epoch": int(checkpoint.get("best_epoch")) if checkpoint.get("best_epoch") is not None else None,
+            "best_val_acc": float(checkpoint.get("best_val_acc"))
+            if checkpoint.get("best_val_acc") is not None
+            else None,
+            "best_val_loss": float(checkpoint.get("best_val_loss"))
+            if checkpoint.get("best_val_loss") is not None
+            else None,
+        }
 
     def ensure_ready(self) -> None:
         self._load_checkpoint_if_available()
@@ -136,9 +146,27 @@ class ModelService:
         with torch.no_grad():
             return self._model(tensor).squeeze(0).cpu()
 
-    def predict(self, image_bytes: bytes) -> dict[str, float | str | bool | dict[str, float]]:
+    def get_model_info(self) -> dict[str, str | bool | float | int | list[str] | None]:
+        self._load_checkpoint_if_available()
+        return {
+            "inference_mode": self.inference_mode,
+            "model_arch": self._arch,
+            "checkpoint_loaded": self._checkpoint_loaded,
+            "class_names": self._class_names,
+            "image_size": self._image_size,
+            "default_threshold": float(self.threshold),
+            "checkpoint_path": str(self._checkpoint_path),
+            "best_epoch": self._checkpoint_meta.get("best_epoch"),
+            "best_val_acc": self._checkpoint_meta.get("best_val_acc"),
+            "best_val_loss": self._checkpoint_meta.get("best_val_loss"),
+        }
+
+    def predict(
+        self, image_bytes: bytes, threshold: float | None = None
+    ) -> dict[str, float | str | bool | dict[str, float]]:
         image = self._read_image(image_bytes)
         logits = self._predict_logits(image)
+        decision_threshold = float(self.threshold if threshold is None else threshold)
 
         probabilities = torch.softmax(logits, dim=0).numpy()
         probability_map = {
@@ -147,14 +175,14 @@ class ModelService:
 
         positive_label = self._class_names[-1]
         positive_prob = probability_map[positive_label]
-        predicted_label = positive_label if positive_prob >= self.threshold else self._class_names[0]
+        predicted_label = positive_label if positive_prob >= decision_threshold else self._class_names[0]
         confidence = max(probability_map.values())
 
         return {
             "predicted_label": predicted_label,
             "confidence": float(confidence),
             "probabilities": probability_map,
-            "threshold": float(self.threshold),
+            "threshold": decision_threshold,
             "inference_mode": self.inference_mode,
             "model_arch": self._arch,
             "checkpoint_loaded": self._checkpoint_loaded,
