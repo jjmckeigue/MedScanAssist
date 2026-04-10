@@ -13,7 +13,7 @@ This repository is organized for:
 
 - Backend: Python 3.11, FastAPI, Uvicorn, PyTorch, torchvision
 - Explainability: Grad-CAM utility service
-- Frontend: React + Vite
+- Frontend: React + Vite (Node 18+ recommended; `frontend/.nvmrc` included)
 - Packaging: Docker + Docker Compose
 
 ## Project Structure
@@ -77,6 +77,14 @@ Run training:
 - `python -m pip install -r backend/requirements-train.txt`
 - `python -m backend.training.train --epochs-head 3 --epochs-finetune 2`
 
+Fairness/generalization-focused options:
+
+- inverse-frequency class weighting is enabled by default (`--disable-class-weighting` to turn off)
+- optional external validation on another institution/dataset:
+  - `python -m backend.training.train --external-test-root data/raw/chest_xray_external`
+- optional subgroup fairness audit with metadata CSV:
+  - `python -m backend.training.train --audit-metadata-csv data/processed/subgroup_metadata.csv --audit-path-column image_path --audit-group-columns sex,age_group,site`
+
 Outputs:
 
 - checkpoint: `backend/checkpoints/best_model.pt`
@@ -88,6 +96,9 @@ Outputs:
 - PR curve: `backend/artifacts/pr_curve.csv` and `backend/artifacts/pr_curve.png`
 - calibration: `backend/artifacts/calibration_curve.csv`, `backend/artifacts/calibration_curve.png`, and `backend/artifacts/calibration_report.txt`
 - threshold tuning: `backend/artifacts/threshold_analysis.csv`, `backend/artifacts/threshold_analysis.png`, and `backend/artifacts/threshold_recommendations.txt`
+- shortcut stress test: `backend/artifacts/test_shortcut_stress_test.csv` and `backend/artifacts/test_shortcut_stress_report.txt`
+- subgroup fairness audit (optional): `backend/artifacts/test_subgroup_fairness_metrics.csv` and `backend/artifacts/test_subgroup_fairness_summary.txt`
+- external validation outputs (optional): `backend/artifacts/external/test/*`
 
 ## API Smoke Tests
 
@@ -144,6 +155,12 @@ Raw dataset files are ignored by git via `.gitignore`.
 - `POST /predict` - predicts class probabilities from an uploaded CXR image
   - optional query: `threshold` (0.0 to 1.0) for decision-threshold override
 - `POST /gradcam` - returns Grad-CAM overlay image (base64 PNG) for uploaded CXR
+  - includes heuristic explainability safety fields: `lung_focus_score`, `off_lung_attention_ratio`, `explainability_warning`
+
+Upload safety:
+
+- backend rejects non-image uploads and payloads larger than `MAX_UPLOAD_BYTES` (default 8 MB)
+- frontend enforces file type and max size checks before any upload attempt
 
 Current model-serving logic is scaffolded and defaults to deterministic placeholder
 scores until trained weights are present.

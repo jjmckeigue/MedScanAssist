@@ -15,12 +15,14 @@ class Settings(BaseSettings):
     checkpoint_path: Path = Field(
         default=Path("./backend/checkpoints/best_model.pt"), alias="CHECKPOINT_PATH"
     )
+    history_db_path: Path = Field(default=Path("./backend/artifacts/history.db"), alias="HISTORY_DB_PATH")
 
     model_arch: str = Field(default="densenet121", alias="MODEL_ARCH")
     class_names: str = Field(default="normal,pneumonia", alias="CLASS_NAMES")
     image_size: int = Field(default=224, alias="IMAGE_SIZE")
     default_threshold: float = Field(default=0.5, alias="DEFAULT_THRESHOLD")
     require_checkpoint: bool = Field(default=False, alias="REQUIRE_CHECKPOINT")
+    max_upload_bytes: int = Field(default=8 * 1024 * 1024, alias="MAX_UPLOAD_BYTES")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
 
