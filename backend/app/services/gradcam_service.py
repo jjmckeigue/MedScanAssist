@@ -97,7 +97,41 @@ class GradCamService:
             handle_fwd.remove()
             handle_bwd.remove()
 
-    def build_overlay_base64(self, image_bytes: bytes) -> dict[str, str | float | bool]:
+    @staticmethod
+    def _heuristic_lung_roi_mask(height: int, width: int) -> np.ndarray:
+        # Conservative thoracic ROI (excludes shoulders/corners where shortcut cues often appear).
+        y_start, y_end = int(height * 0.15), int(height * 0.9)
+        x_start, x_end = int(width * 0.15), int(width * 0.85)
+        mask = np.zeros((height, width), dtype=np.float32)
+        mask[y_start:y_end, x_start:x_end] = 1.0
+        return mask
+
+    def _explainability_stats(self, heatmap: np.ndarray) -> dict[str, float | str | None]:
+        heatmap_sum = float(np.sum(heatmap)) + 1e-8
+        roi_mask = self._heuristic_lung_roi_mask(heatmap.shape[0], heatmap.shape[1])
+        lung_attention = float(np.sum(heatmap * roi_mask))
+        lung_focus = max(0.0, min(1.0, lung_attention / heatmap_sum))
+        off_lung = max(0.0, min(1.0, 1.0 - lung_focus))
+
+        warning = None
+        if lung_focus < 0.5:
+            warning = (
+                "Grad-CAM attention is predominantly outside the expected lung region. "
+                "Treat this prediction cautiously and verify with clinical review."
+            )
+        elif lung_focus < 0.65:
+            warning = (
+                "Grad-CAM attention is only partially concentrated in the lung region. "
+                "Interpret with caution."
+            )
+
+        return {
+            "lung_focus_score": float(lung_focus),
+            "off_lung_attention_ratio": float(off_lung),
+            "explainability_warning": warning,
+        }
+
+    def build_overlay_base64(self, image_bytes: bytes) -> dict[str, str | float | bool | None]:
         pred = model_service.predict(image_bytes)
         image = model_service.read_image(image_bytes)
         img_np = np.array(image)
@@ -108,6 +142,7 @@ class GradCamService:
             heatmap = self._synthetic_heatmap(img_np.shape[0], img_np.shape[1])
 
         encoded = self._overlay_image(img_np, heatmap)
+        explainability = self._explainability_stats(heatmap)
 
         return {
             "predicted_label": str(pred["predicted_label"]),
@@ -116,6 +151,9 @@ class GradCamService:
             "inference_mode": str(pred["inference_mode"]),
             "model_arch": str(pred["model_arch"]),
             "checkpoint_loaded": bool(pred["checkpoint_loaded"]),
+            "lung_focus_score": float(explainability["lung_focus_score"]),
+            "off_lung_attention_ratio": float(explainability["off_lung_attention_ratio"]),
+            "explainability_warning": explainability["explainability_warning"],
         }
 
 
