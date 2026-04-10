@@ -10,7 +10,9 @@ router = APIRouter(tags=["inference"])
 
 @router.post("/predict", response_model=PredictionResponse)
 async def predict(
-    file: UploadFile = File(...), threshold: float | None = Query(default=None, ge=0.0, le=1.0)
+    file: UploadFile = File(...),
+    threshold: float | None = Query(default=None, ge=0.0, le=1.0),
+    tta: bool = Query(default=False, description="Enable test-time augmentation for more robust predictions."),
 ) -> PredictionResponse:
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Uploaded file must be an image.")
@@ -28,7 +30,7 @@ async def predict(
         )
 
     try:
-        result = model_service.predict(image_bytes, threshold=threshold)
+        result = model_service.predict(image_bytes, threshold=threshold, tta=tta)
     except InvalidImageError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
