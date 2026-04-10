@@ -1,7 +1,10 @@
 import argparse
 import csv
+from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 import random
+import time
 
 import numpy as np
 from sklearn.calibration import calibration_curve
@@ -108,7 +111,12 @@ def build_scheduler(optimizer: optim.Optimizer, args: argparse.Namespace) -> Red
 
 
 def run_epoch(
-    model: nn.Module, loader: DataLoader, criterion: nn.Module, optimizer: optim.Optimizer | None
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,
+    optimizer: optim.Optimizer | None,
+    heartbeat_seconds: float,
+    heartbeat_label: str,
 ) -> tuple[float, float]:
     is_train = optimizer is not None
     model.train(is_train)
@@ -116,8 +124,10 @@ def run_epoch(
     running_loss = 0.0
     correct = 0
     total = 0
+    total_batches = len(loader)
+    last_heartbeat = time.monotonic()
 
-    for images, labels in loader:
+    for batch_idx, (images, labels) in enumerate(loader, start=1):
         if is_train:
             optimizer.zero_grad()
         logits = model(images)
@@ -130,6 +140,13 @@ def run_epoch(
         preds = torch.argmax(logits, dim=1)
         correct += int((preds == labels).sum().item())
         total += labels.size(0)
+        now = time.monotonic()
+        if heartbeat_seconds > 0 and (now - last_heartbeat) >= heartbeat_seconds:
+            status(
+                f"{heartbeat_label}: still running "
+                f"(batch {batch_idx}/{total_batches}, seen {total} samples)."
+            )
+            last_heartbeat = now
 
     avg_loss = running_loss / total if total else 0.0
     accuracy = correct / total if total else 0.0
@@ -431,6 +448,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scheduler-min-lr", type=float, default=1e-6)
     parser.add_argument("--early-stopping-patience", type=int, default=2)
     parser.add_argument("--early-stopping-min-delta", type=float, default=0.0)
+    parser.add_argument(
+        "--heartbeat-seconds",
+        type=float,
+        default=30.0,
+        help="Seconds between in-epoch heartbeat status logs (set 0 to disable).",
+    )
+    parser.add_argument(
+        "--disable-class-weighting",
+        action="store_true",
+        help="Disable inverse-frequency class weighting in cross-entropy loss.",
+    )
+    parser.add_argument(
+        "--external-test-root",
+        type=str,
+        default=None,
+        help=(
+            "Optional external dataset root with ImageFolder layout to assess "
+            "generalization (for example: data/raw/chest_xray_external)."
+        ),
+    )
+    parser.add_argument(
+        "--audit-metadata-csv",
+        type=str,
+        default=None,
+        help=(
+            "Optional CSV with per-image subgroup metadata for fairness audits. "
+            "Must include an image path column and one or more subgroup columns."
+        ),
+    )
+    parser.add_argument(
+        "--audit-path-column",
+        type=str,
+        default="image_path",
+        help="Column name in --audit-metadata-csv that contains image paths.",
+    )
+    parser.add_argument(
+        "--audit-group-columns",
+        type=str,
+        default="sex,age_group,site",
+        help="Comma-separated subgroup columns to evaluate when metadata is provided.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
@@ -463,22 +521,394 @@ def collect_test_outputs(
     return np.array(y_true), np.array(y_pred), np.array(y_score)
 
 
+def _mask_corners(batch: torch.Tensor, patch_fraction: float) -> torch.Tensor:
+    masked = batch.clone()
+    _, _, height, width = masked.shape
+    patch_h = max(1, int(height * patch_fraction))
+    patch_w = max(1, int(width * patch_fraction))
+    masked[:, :, :patch_h, :patch_w] = 0.0
+    masked[:, :, :patch_h, width - patch_w :] = 0.0
+    masked[:, :, height - patch_h :, :patch_w] = 0.0
+    masked[:, :, height - patch_h :, width - patch_w :] = 0.0
+    return masked
+
+
+def _mask_center_roi(batch: torch.Tensor, x_margin: float = 0.2, y_margin: float = 0.15) -> torch.Tensor:
+    masked = batch.clone()
+    _, _, height, width = masked.shape
+    x0, x1 = int(width * x_margin), int(width * (1.0 - x_margin))
+    y0, y1 = int(height * y_margin), int(height * 0.9)
+    masked[:, :, y0:y1, x0:x1] = 0.0
+    return masked
+
+
+def save_shortcut_stress_test_artifacts(
+    model: nn.Module,
+    loader: DataLoader,
+    positive_index: int,
+    out_dir: Path,
+    split_name: str,
+    corner_patch_fraction: float = 0.12,
+) -> None:
+    rows: list[dict[str, float | int]] = []
+    model.eval()
+    with torch.no_grad():
+        for images, labels in loader:
+            base_logits = model(images)
+            base_probs = torch.softmax(base_logits, dim=1)
+            base_preds = torch.argmax(base_probs, dim=1)
+
+            corner_logits = model(_mask_corners(images, patch_fraction=corner_patch_fraction))
+            corner_probs = torch.softmax(corner_logits, dim=1)
+            corner_preds = torch.argmax(corner_probs, dim=1)
+
+            center_logits = model(_mask_center_roi(images))
+            center_probs = torch.softmax(center_logits, dim=1)
+            center_preds = torch.argmax(center_probs, dim=1)
+
+            for idx in range(labels.size(0)):
+                base_prob = float(base_probs[idx, positive_index].item())
+                rows.append(
+                    {
+                        "y_true": int(labels[idx].item()),
+                        "base_pred": int(base_preds[idx].item()),
+                        "corner_pred": int(corner_preds[idx].item()),
+                        "center_pred": int(center_preds[idx].item()),
+                        "base_prob_pos": base_prob,
+                        "corner_prob_pos": float(corner_probs[idx, positive_index].item()),
+                        "center_prob_pos": float(center_probs[idx, positive_index].item()),
+                    }
+                )
+
+    if not rows:
+        return
+
+    csv_path = out_dir / f"{split_name}_shortcut_stress_test.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as fp:
+        writer = csv.DictWriter(fp, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    y_true = np.array([int(row["y_true"]) for row in rows], dtype=np.int64)
+    base_pred = np.array([int(row["base_pred"]) for row in rows], dtype=np.int64)
+    corner_pred = np.array([int(row["corner_pred"]) for row in rows], dtype=np.int64)
+    center_pred = np.array([int(row["center_pred"]) for row in rows], dtype=np.int64)
+    base_prob = np.array([float(row["base_prob_pos"]) for row in rows], dtype=np.float64)
+    corner_prob = np.array([float(row["corner_prob_pos"]) for row in rows], dtype=np.float64)
+    center_prob = np.array([float(row["center_prob_pos"]) for row in rows], dtype=np.float64)
+
+    baseline_acc = accuracy_score(y_true, base_pred)
+    corner_acc = accuracy_score(y_true, corner_pred)
+    center_acc = accuracy_score(y_true, center_pred)
+    corner_flip_rate = float(np.mean(base_pred != corner_pred))
+    center_flip_rate = float(np.mean(base_pred != center_pred))
+    corner_prob_drop = float(np.mean(np.abs(base_prob - corner_prob)))
+    center_prob_drop = float(np.mean(np.abs(base_prob - center_prob)))
+    shortcut_index = corner_flip_rate / (center_flip_rate + 1e-8)
+
+    risk_level = "low"
+    if shortcut_index > 0.9:
+        risk_level = "high"
+    elif shortcut_index > 0.6:
+        risk_level = "moderate"
+
+    report_path = out_dir / f"{split_name}_shortcut_stress_report.txt"
+    with report_path.open("w", encoding="utf-8") as fp:
+        fp.write("Shortcut stress test (corner vs center masking)\n")
+        fp.write(f"split: {split_name}\n")
+        fp.write(f"samples: {len(rows)}\n")
+        fp.write(f"corner_patch_fraction: {corner_patch_fraction:.3f}\n\n")
+        fp.write(f"baseline_accuracy: {baseline_acc:.4f}\n")
+        fp.write(f"corner_mask_accuracy: {corner_acc:.4f}\n")
+        fp.write(f"center_mask_accuracy: {center_acc:.4f}\n")
+        fp.write(f"corner_flip_rate: {corner_flip_rate:.4f}\n")
+        fp.write(f"center_flip_rate: {center_flip_rate:.4f}\n")
+        fp.write(f"mean_prob_drop_corner: {corner_prob_drop:.4f}\n")
+        fp.write(f"mean_prob_drop_center: {center_prob_drop:.4f}\n")
+        fp.write(f"shortcut_reliance_index: {shortcut_index:.4f}\n")
+        fp.write(f"shortcut_risk_level: {risk_level}\n\n")
+        fp.write(
+            "Interpretation: high shortcut_reliance_index means predictions are almost as sensitive "
+            "to corner masking as center masking, suggesting potential non-anatomical cue reliance.\n"
+        )
+
+    status(
+        f"Saved shortcut stress artifacts for '{split_name}' to {csv_path} and {report_path} "
+        f"(risk={risk_level}, index={shortcut_index:.3f})."
+    )
+
+
+def status(message: str) -> None:
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    print(f"[{timestamp}] {message}", flush=True)
+
+
+def build_class_weight_tensor(train_ds) -> torch.Tensor:
+    class_counts = Counter(train_ds.targets)
+    total = sum(class_counts.values())
+    num_classes = len(train_ds.classes)
+    weights = []
+    for class_idx in range(num_classes):
+        count = class_counts.get(class_idx, 0)
+        if count <= 0:
+            weights.append(0.0)
+            continue
+        weights.append(total / (num_classes * count))
+    return torch.tensor(weights, dtype=torch.float32)
+
+
+def normalize_path_key(path_str: str) -> str:
+    return str(Path(path_str)).replace("\\", "/").lstrip("./").lower()
+
+
+def load_subgroup_metadata(
+    metadata_csv: Path, path_column: str, group_columns: list[str]
+) -> tuple[dict[str, dict[str, str]], list[str]]:
+    with metadata_csv.open("r", encoding="utf-8", newline="") as fp:
+        reader = csv.DictReader(fp)
+        if reader.fieldnames is None or path_column not in reader.fieldnames:
+            raise ValueError(
+                f"Metadata CSV must include path column '{path_column}'. "
+                f"Found columns: {reader.fieldnames or []}"
+            )
+        present_group_columns = [col for col in group_columns if col in (reader.fieldnames or [])]
+        if not present_group_columns:
+            raise ValueError(
+                "No requested subgroup columns were found in metadata CSV. "
+                f"Requested={group_columns}, found={reader.fieldnames or []}"
+            )
+
+        mapping: dict[str, dict[str, str]] = {}
+        for row in reader:
+            raw_path = (row.get(path_column) or "").strip()
+            if not raw_path:
+                continue
+            key = normalize_path_key(raw_path)
+            mapping[key] = {
+                col: (row.get(col) or "").strip() for col in present_group_columns if (row.get(col) or "").strip()
+            }
+    return mapping, present_group_columns
+
+
+def save_subgroup_fairness_artifacts(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_score: np.ndarray,
+    positive_label: int,
+    sample_paths: list[str],
+    split_name: str,
+    out_dir: Path,
+    metadata_csv: Path,
+    path_column: str,
+    group_columns: list[str],
+) -> None:
+    metadata_map, present_group_columns = load_subgroup_metadata(
+        metadata_csv, path_column=path_column, group_columns=group_columns
+    )
+    if not present_group_columns:
+        return
+
+    rows: list[dict[str, float | str]] = []
+    joined = 0
+    for idx, sample_path in enumerate(sample_paths):
+        sample_key = normalize_path_key(sample_path)
+        subgroup_values = metadata_map.get(sample_key, {})
+        if not subgroup_values:
+            sample_name_key = normalize_path_key(Path(sample_path).name)
+            subgroup_values = metadata_map.get(sample_name_key, {})
+        if not subgroup_values:
+            continue
+        joined += 1
+
+        for group_col in present_group_columns:
+            group_value = subgroup_values.get(group_col)
+            if not group_value:
+                continue
+            rows.append(
+                {
+                    "split": split_name,
+                    "group_column": group_col,
+                    "group_value": group_value,
+                    "y_true": float(y_true[idx]),
+                    "y_pred": float(y_pred[idx]),
+                    "y_score": float(y_score[idx]),
+                }
+            )
+
+    if not rows:
+        print(
+            "Subgroup fairness audit skipped: no metadata rows matched sample paths. "
+            "Check path normalization and CSV path column."
+        )
+        return
+
+    metrics_rows: list[dict[str, float | str]] = []
+    for group_col in present_group_columns:
+        group_values = sorted({str(row["group_value"]) for row in rows if row["group_column"] == group_col})
+        for group_value in group_values:
+            subset = [
+                row
+                for row in rows
+                if row["group_column"] == group_col and str(row["group_value"]) == group_value
+            ]
+            yt = np.array([int(row["y_true"]) for row in subset], dtype=np.int64)
+            yp = np.array([int(row["y_pred"]) for row in subset], dtype=np.int64)
+            ys = np.array([float(row["y_score"]) for row in subset], dtype=np.float64)
+            if yt.size == 0:
+                continue
+
+            tn, fp, fn, tp = confusion_matrix(yt, yp, labels=[0, 1]).ravel()
+            prevalence = float(np.mean(yt == positive_label))
+            acc = accuracy_score(yt, yp)
+            prec = precision_score(yt, yp, zero_division=0)
+            rec = recall_score(yt, yp, zero_division=0)
+            f1 = f1_score(yt, yp, zero_division=0)
+            fpr = fp / (fp + tn) if (fp + tn) else 0.0
+            fnr = fn / (fn + tp) if (fn + tp) else 0.0
+
+            metrics_rows.append(
+                {
+                    "split": split_name,
+                    "group_column": group_col,
+                    "group_value": group_value,
+                    "n": int(yt.size),
+                    "prevalence": float(prevalence),
+                    "avg_score": float(np.mean(ys)),
+                    "accuracy": float(acc),
+                    "precision": float(prec),
+                    "recall": float(rec),
+                    "f1": float(f1),
+                    "fpr": float(fpr),
+                    "fnr": float(fnr),
+                    "tn": int(tn),
+                    "fp": int(fp),
+                    "fn": int(fn),
+                    "tp": int(tp),
+                }
+            )
+
+    if not metrics_rows:
+        return
+
+    out_path = out_dir / f"{split_name}_subgroup_fairness_metrics.csv"
+    with out_path.open("w", newline="", encoding="utf-8") as fp:
+        writer = csv.DictWriter(fp, fieldnames=list(metrics_rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(metrics_rows)
+
+    summary_path = out_dir / f"{split_name}_subgroup_fairness_summary.txt"
+    metric_names = ["accuracy", "precision", "recall", "f1", "fpr", "fnr"]
+    with summary_path.open("w", encoding="utf-8") as fp:
+        fp.write("Subgroup fairness audit summary\n")
+        fp.write(f"Split: {split_name}\n")
+        fp.write(f"Metadata CSV: {metadata_csv}\n")
+        fp.write(f"Joined samples: {joined}/{len(sample_paths)}\n\n")
+        for group_col in present_group_columns:
+            fp.write(f"[{group_col}]\n")
+            subset_rows = [row for row in metrics_rows if row["group_column"] == group_col]
+            if len(subset_rows) < 2:
+                fp.write("  Not enough groups for disparity analysis.\n\n")
+                continue
+            for metric_name in metric_names:
+                values = [float(row[metric_name]) for row in subset_rows]
+                disparity = max(values) - min(values)
+                fp.write(f"  {metric_name}_disparity: {disparity:.4f}\n")
+            fp.write("\n")
+
+    print(
+        f"Saved subgroup fairness artifacts for '{split_name}' to {out_path} and {summary_path} "
+        f"(joined {joined}/{len(sample_paths)} samples)."
+    )
+
+
+def evaluate_split_and_export(
+    model: nn.Module,
+    dataset_root: Path,
+    split_name: str,
+    transforms_map: dict[str, object],
+    batch_size: int,
+    artifact_dir: Path,
+    audit_metadata_csv: Path | None,
+    audit_path_column: str,
+    audit_group_columns: list[str],
+) -> None:
+    split_path = dataset_root / split_name
+    if not split_path.exists():
+        print(f"No '{split_name}' split found at {split_path}; skipped artifact export.")
+        return
+
+    ds = build_imagefolder_dataset(dataset_root, split_name, transforms_map["test"])
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    positive_idx = ds.classes.index("PNEUMONIA") if "PNEUMONIA" in ds.classes else len(ds.classes) - 1
+    y_true, y_pred, y_score = collect_test_outputs(model, loader, positive_idx)
+
+    split_out_dir = artifact_dir if split_name == "test" else artifact_dir / split_name
+    split_out_dir.mkdir(parents=True, exist_ok=True)
+    save_confusion_matrix_artifacts(y_true, y_pred, ds.classes, split_out_dir)
+    save_roc_artifacts(y_true, y_score, positive_idx, split_out_dir)
+    save_pr_artifacts(y_true, y_score, positive_idx, split_out_dir)
+    save_calibration_artifacts(y_true, y_score, positive_idx, split_out_dir)
+    save_threshold_tuning_artifacts(y_true, y_score, ds.classes, positive_idx, split_out_dir)
+    save_shortcut_stress_test_artifacts(
+        model=model,
+        loader=loader,
+        positive_index=positive_idx,
+        out_dir=split_out_dir,
+        split_name=split_name,
+    )
+
+    if audit_metadata_csv is not None:
+        sample_paths = [str(path) for path, _class_idx in ds.samples]
+        save_subgroup_fairness_artifacts(
+            y_true=y_true,
+            y_pred=y_pred,
+            y_score=y_score,
+            positive_label=positive_idx,
+            sample_paths=sample_paths,
+            split_name=split_name,
+            out_dir=split_out_dir,
+            metadata_csv=audit_metadata_csv,
+            path_column=audit_path_column,
+            group_columns=audit_group_columns,
+        )
+
+    print(
+        f"Saved confusion matrix, ROC, PR, calibration, and threshold tuning artifacts "
+        f"for split '{split_name}' to {split_out_dir}."
+    )
+
+
 def main() -> None:
+    status("Starting training script.")
     args = parse_args()
     set_seed(args.seed)
+    status(f"Seed set to {args.seed}.")
 
     dataset_root = settings.dataset_root
     arch = settings.model_arch.lower()
     transforms_map = build_transforms(settings.image_size)
+    status(f"Building datasets from {dataset_root}.")
 
     train_ds = build_imagefolder_dataset(dataset_root, "train", transforms_map["train"])
     val_ds = build_imagefolder_dataset(dataset_root, "val", transforms_map["val"])
+    status(
+        f"Datasets loaded (train={len(train_ds)} images, val={len(val_ds)} images, classes={train_ds.classes})."
+    )
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    status(f"DataLoaders ready (batch_size={args.batch_size}).")
 
     model = build_model(num_classes=len(train_ds.classes), arch=arch).to("cpu")
-    criterion = nn.CrossEntropyLoss()
+    status(f"Model built ({arch}) on CPU.")
+    criterion_kwargs = {}
+    if not args.disable_class_weighting:
+        class_weights = build_class_weight_tensor(train_ds)
+        criterion_kwargs["weight"] = class_weights
+        status(f"Using inverse-frequency class weights: {class_weights.tolist()}")
+    else:
+        status("Class weighting disabled.")
+    criterion = nn.CrossEntropyLoss(**criterion_kwargs)
     freeze_feature_extractor(model, arch)
     optimizer = build_optimizer(model, args.lr_head)
     scheduler = build_scheduler(optimizer, args)
@@ -498,17 +928,20 @@ def main() -> None:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = checkpoint_dir / "best_model.pt"
+    status(f"Checkpoint path: {checkpoint_path}")
+    status("Beginning training loop.")
 
     for epoch in range(1, total_epochs + 1):
+        status(f"Epoch {epoch}/{total_epochs}: running train/validation.")
         phase = "head"
         if epoch == args.epochs_head + 1 and last_block_epochs > 0:
-            print("Switching phase: unfreeze last block + head.")
+            status("Switching phase: unfreeze last block + head.")
             unfreeze_last_block_and_head(model, arch)
             optimizer = build_optimizer(model, args.lr_finetune)
             scheduler = build_scheduler(optimizer, args)
             phase = "last_block"
         elif epoch == args.epochs_head + last_block_epochs + 1 and full_unfreeze_epochs > 0:
-            print("Switching phase: full-network fine-tuning.")
+            status("Switching phase: full-network fine-tuning.")
             unfreeze_all_layers(model)
             optimizer = build_optimizer(model, args.lr_finetune)
             scheduler = build_scheduler(optimizer, args)
@@ -518,9 +951,23 @@ def main() -> None:
         elif epoch > args.epochs_head:
             phase = "last_block"
 
-        train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer)
+        train_loss, train_acc = run_epoch(
+            model,
+            train_loader,
+            criterion,
+            optimizer,
+            heartbeat_seconds=args.heartbeat_seconds,
+            heartbeat_label=f"Epoch {epoch}/{total_epochs} train",
+        )
         with torch.no_grad():
-            val_loss, val_acc = run_epoch(model, val_loader, criterion, optimizer=None)
+            val_loss, val_acc = run_epoch(
+                model,
+                val_loader,
+                criterion,
+                optimizer=None,
+                heartbeat_seconds=args.heartbeat_seconds,
+                heartbeat_label=f"Epoch {epoch}/{total_epochs} val",
+            )
 
         scheduler.step(val_loss)
         current_lr = float(optimizer.param_groups[0]["lr"])
@@ -565,7 +1012,7 @@ def main() -> None:
         else:
             early_stop_count += 1
             if early_stop_count >= args.early_stopping_patience:
-                print(
+                status(
                     f"Early stopping triggered at epoch {epoch} "
                     f"(best epoch={best_epoch}, val_acc={best_val_acc:.4f})."
                 )
@@ -573,43 +1020,59 @@ def main() -> None:
 
     metrics_csv = artifact_dir / "training_metrics.csv"
     metrics_plot = artifact_dir / "training_curves.png"
+    status("Writing training metrics artifacts.")
     write_metrics_csv(history, metrics_csv)
     save_training_plot(history, metrics_plot, best_epoch)
 
+    status("Loading best checkpoint for evaluation.")
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     best_model = build_model(num_classes=len(checkpoint["class_names"]), arch=arch).to("cpu")
     best_model.load_state_dict(checkpoint["state_dict"])
     best_model.eval()
 
-    test_split_path = dataset_root / "test"
-    if test_split_path.exists():
-        test_ds = build_imagefolder_dataset(dataset_root, "test", transforms_map["test"])
-        test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
-        positive_idx = (
-            test_ds.classes.index("PNEUMONIA")
-            if "PNEUMONIA" in test_ds.classes
-            else len(test_ds.classes) - 1
-        )
-        y_true, y_pred, y_score = collect_test_outputs(best_model, test_loader, positive_idx)
-        save_confusion_matrix_artifacts(y_true, y_pred, test_ds.classes, artifact_dir)
-        save_roc_artifacts(y_true, y_score, positive_idx, artifact_dir)
-        save_pr_artifacts(y_true, y_score, positive_idx, artifact_dir)
-        save_calibration_artifacts(y_true, y_score, positive_idx, artifact_dir)
-        save_threshold_tuning_artifacts(y_true, y_score, test_ds.classes, positive_idx, artifact_dir)
-        print(
-            "Saved confusion matrix, ROC, PR, calibration, and threshold tuning artifacts "
-            "to backend/artifacts."
-        )
-    else:
-        print("No test split found; skipped confusion matrix and ROC export.")
+    audit_metadata_csv = Path(args.audit_metadata_csv) if args.audit_metadata_csv else None
+    audit_group_columns = [col.strip() for col in args.audit_group_columns.split(",") if col.strip()]
+    if audit_metadata_csv is not None and not audit_metadata_csv.exists():
+        raise FileNotFoundError(f"Audit metadata CSV not found: {audit_metadata_csv}")
 
-    print(f"Saved best checkpoint to: {checkpoint_path}")
-    print(f"Saved best epoch: {best_epoch}")
-    print(f"Saved metrics CSV to: {metrics_csv}")
+    status("Running evaluation on in-domain test split.")
+    evaluate_split_and_export(
+        model=best_model,
+        dataset_root=dataset_root,
+        split_name="test",
+        transforms_map=transforms_map,
+        batch_size=args.batch_size,
+        artifact_dir=artifact_dir,
+        audit_metadata_csv=audit_metadata_csv,
+        audit_path_column=args.audit_path_column,
+        audit_group_columns=audit_group_columns,
+    )
+
+    if args.external_test_root:
+        external_root = Path(args.external_test_root)
+        if not external_root.exists():
+            raise FileNotFoundError(f"External dataset root not found: {external_root}")
+        status(f"Running external validation from {external_root}.")
+        evaluate_split_and_export(
+            model=best_model,
+            dataset_root=external_root,
+            split_name="test",
+            transforms_map=transforms_map,
+            batch_size=args.batch_size,
+            artifact_dir=artifact_dir / "external",
+            audit_metadata_csv=audit_metadata_csv,
+            audit_path_column=args.audit_path_column,
+            audit_group_columns=audit_group_columns,
+        )
+
+    status(f"Saved best checkpoint to: {checkpoint_path}")
+    status(f"Saved best epoch: {best_epoch}")
+    status(f"Saved metrics CSV to: {metrics_csv}")
     if plt is None:
-        print("Matplotlib not installed; skipped PNG artifact plots.")
+        status("Matplotlib not installed; skipped PNG artifact plots.")
     else:
-        print(f"Saved training curves to: {metrics_plot}")
+        status(f"Saved training curves to: {metrics_plot}")
+    status("Training script finished successfully.")
 
 
 if __name__ == "__main__":
