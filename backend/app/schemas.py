@@ -48,6 +48,16 @@ class ModelInfoResponse(BaseModel):
     best_epoch: int | None = None
     best_val_acc: float | None = None
     best_val_loss: float | None = None
+    temperature: float = Field(default=1.0, description="Temperature scaling factor for calibrated probabilities.")
+
+
+class FeedbackRequest(BaseModel):
+    feedback: str = Field(description="Clinician feedback: 'correct', 'incorrect', or 'clear'.")
+
+
+class FeedbackResponse(BaseModel):
+    id: int
+    feedback: str | None
 
 
 class AnalysisHistoryRecord(BaseModel):
@@ -61,6 +71,7 @@ class AnalysisHistoryRecord(BaseModel):
     model_arch: str
     checkpoint_loaded: bool
     probabilities: dict[str, float]
+    feedback: str | None = None
 
 
 class AnalysisHistorySummary(BaseModel):
@@ -68,3 +79,19 @@ class AnalysisHistorySummary(BaseModel):
     pneumonia_count: int
     normal_count: int
     avg_confidence: float
+
+
+class DriftBin(BaseModel):
+    bin: str
+    baseline_prop: float
+    recent_prop: float
+    psi_contribution: float
+
+
+class DriftReport(BaseModel):
+    psi: float | None = Field(description="Population Stability Index (None if insufficient data).")
+    drift_detected: bool
+    message: str
+    baseline_count: int
+    recent_count: int
+    bins: list[DriftBin] = []

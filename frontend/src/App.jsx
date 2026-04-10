@@ -5,7 +5,8 @@ import {
   getHistorySummary,
   getModelInfo,
   healthCheck,
-  predictImage
+  predictImage,
+  submitFeedback
 } from "./api";
 
 const MAX_UPLOAD_MB = Number(import.meta.env.VITE_MAX_UPLOAD_MB || 8);
@@ -139,6 +140,15 @@ function App() {
     setError("");
   };
 
+  const onFeedback = async (recordId, feedback) => {
+    try {
+      await submitFeedback(recordId, feedback);
+      await refreshHistory();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   const onDownloadReport = () => {
     if (!prediction) {
       setError("Run an analysis before downloading a report.");
@@ -154,7 +164,14 @@ function App() {
       inference_mode: prediction.inference_mode,
       model_arch: prediction.model_arch,
       checkpoint_loaded: prediction.checkpoint_loaded,
-      model_info: modelInfo || null
+      model_info: modelInfo || null,
+      explainability: gradcam
+        ? {
+            lung_focus_score: gradcam.lung_focus_score,
+            off_lung_attention_ratio: gradcam.off_lung_attention_ratio,
+            explainability_warning: gradcam.explainability_warning || null
+          }
+        : null
     };
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -185,7 +202,10 @@ function App() {
       "best_epoch",
       "best_val_acc",
       "best_val_loss",
-      ...probabilityColumns.map((label) => `prob_${label}`)
+      ...probabilityColumns.map((label) => `prob_${label}`),
+      "lung_focus_score",
+      "off_lung_attention_ratio",
+      "explainability_warning"
     ];
 
     const values = [
@@ -200,7 +220,10 @@ function App() {
       String(modelInfo?.best_epoch ?? ""),
       String(modelInfo?.best_val_acc ?? ""),
       String(modelInfo?.best_val_loss ?? ""),
-      ...probabilityColumns.map((label) => String(probabilities[label] ?? ""))
+      ...probabilityColumns.map((label) => String(probabilities[label] ?? "")),
+      String(gradcam?.lung_focus_score ?? ""),
+      String(gradcam?.off_lung_attention_ratio ?? ""),
+      String(gradcam?.explainability_warning ?? "")
     ];
 
     const toCsvCell = (value) => `"${String(value).replaceAll("\"", "\"\"")}"`;
@@ -563,6 +586,7 @@ function App() {
                       <th>Confidence</th>
                       <th>Threshold</th>
                       <th>Mode</th>
+                      <th>Feedback</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -574,6 +598,26 @@ function App() {
                         <td>{(row.confidence * 100).toFixed(1)}%</td>
                         <td>{row.threshold.toFixed(2)}</td>
                         <td>{row.inference_mode}</td>
+                        <td className="feedback-cell">
+                          <button
+                            type="button"
+                            className={`feedback-btn ${row.feedback === "correct" ? "active-correct" : ""}`}
+                            title="Mark as correct"
+                            onClick={() => onFeedback(row.id, row.feedback === "correct" ? "clear" : "correct")}
+                            aria-label="Mark correct"
+                          >
+                            &#x2713;
+                          </button>
+                          <button
+                            type="button"
+                            className={`feedback-btn ${row.feedback === "incorrect" ? "active-incorrect" : ""}`}
+                            title="Mark as incorrect"
+                            onClick={() => onFeedback(row.id, row.feedback === "incorrect" ? "clear" : "incorrect")}
+                            aria-label="Mark incorrect"
+                          >
+                            &#x2717;
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>

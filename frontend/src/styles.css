@@ -594,6 +594,43 @@ button:disabled {
   background: #f8fbff;
 }
 
+.feedback-cell {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.feedback-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  transition: background 100ms ease, color 100ms ease, border-color 100ms ease;
+}
+
+.feedback-btn:hover:not(:disabled) {
+  background: #f0f4fa;
+}
+
+.feedback-btn.active-correct {
+  background: var(--ok-bg);
+  color: var(--ok-text);
+  border-color: #a6dbc2;
+}
+
+.feedback-btn.active-incorrect {
+  background: #fde8e6;
+  color: var(--danger);
+  border-color: #f3b8b3;
+}
+
 @media (max-width: 900px) {
   .grid {
     grid-template-columns: 1fr;

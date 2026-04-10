@@ -148,15 +148,6 @@ data/raw/chest_xray/
 
 Raw dataset files are ignored by git via `.gitignore`.
 
-## API Endpoints (v1)
-
-- `GET /health` - service health check
-- `GET /model-info` - returns model/checkpoint metadata and runtime mode
-- `POST /predict` - predicts class probabilities from an uploaded CXR image
-  - optional query: `threshold` (0.0 to 1.0) for decision-threshold override
-- `POST /gradcam` - returns Grad-CAM overlay image (base64 PNG) for uploaded CXR
-  - includes heuristic explainability safety fields: `lung_focus_score`, `off_lung_attention_ratio`, `explainability_warning`
-
 Upload safety:
 
 - backend rejects non-image uploads and payloads larger than `MAX_UPLOAD_BYTES` (default 8 MB)
@@ -165,9 +156,58 @@ Upload safety:
 Current model-serving logic is scaffolded and defaults to deterministic placeholder
 scores until trained weights are present.
 
-## Next Steps
+## Training Options Reference
 
-1. Train and export your first checkpoint from Kaggle dataset
-2. Validate checkpoint-backed inference mode on `/predict` and `/gradcam`
-3. Add evaluation metrics (confusion matrix, ROC-AUC) to the training pipeline
-4. Connect React upload UI to `/predict` and `/gradcam`
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--epochs-head` | 3 | Epochs with frozen backbone (classifier head only) |
+| `--epochs-finetune` | 2 | Epochs for gradual unfreezing after head training |
+| `--epochs-last-block` | 1 | Max epochs for last block + head before full unfreeze |
+| `--warmup-epochs` | 0 | Linear LR warmup epochs (1e-7 to `--lr-head`) |
+| `--label-smoothing` | 0.0 | Label smoothing factor for CrossEntropyLoss (0.1 recommended) |
+| `--arch` | env `MODEL_ARCH` | Architecture override: `densenet121`, `resnet50`, or `simple_cnn` |
+| `--kfold` | 0 | Stratified k-fold CV (e.g. `--kfold 5`); produces per-fold artifacts |
+| `--disable-augmentation` | off | Disable training augmentation (use plain resize only) |
+| `--disable-class-weighting` | off | Disable inverse-frequency class weighting |
+| `--external-test-root` | none | External dataset root for generalization testing |
+| `--audit-metadata-csv` | none | CSV with per-image subgroup metadata for fairness audits |
+| `--heartbeat-seconds` | 30 | Seconds between in-epoch progress logs |
+
+### Architecture comparison example
+
+```bash
+# Transfer learning (default)
+python -m backend.training.train --epochs-head 5 --epochs-finetune 5 --warmup-epochs 1 --label-smoothing 0.1
+
+# Simple CNN baseline for comparison
+python -m backend.training.train --arch simple_cnn --epochs-head 10 --epochs-finetune 0
+```
+
+### K-fold cross-validation example
+
+```bash
+python -m backend.training.train --kfold 5 --epochs-head 3 --epochs-finetune 2
+```
+
+Outputs: `backend/artifacts/kfold/fold_*/best_model.pt` and `backend/artifacts/kfold/kfold_summary.txt`
+
+## Inference Features
+
+- **Temperature-scaled probabilities**: Checkpoint stores an optimal temperature parameter; inference applies temperature scaling for calibrated probability outputs.
+- **Test-time augmentation (TTA)**: Pass `?tta=true` to `/predict` to average predictions across multiple augmented views of the input image.
+- **Clinician feedback**: `POST /history/{id}/feedback` with `{"feedback": "correct"}` or `{"feedback": "incorrect"}` to flag predictions. Displayed in the Review History UI.
+- **Prediction drift monitoring**: `GET /history/drift` computes Population Stability Index (PSI) between baseline and recent prediction confidence distributions, alerting when distribution shift exceeds the 0.2 threshold.
+
+## API Endpoints (v1)
+
+- `GET /health` - service health check
+- `GET /model-info` - returns model/checkpoint metadata, runtime mode, and temperature scaling factor
+- `POST /predict` - predicts class probabilities from an uploaded CXR image
+  - optional query: `threshold` (0.0 to 1.0) for decision-threshold override
+  - optional query: `tta` (true/false) for test-time augmentation
+- `POST /gradcam` - returns Grad-CAM overlay image (base64 PNG) for uploaded CXR
+  - includes heuristic explainability safety fields: `lung_focus_score`, `off_lung_attention_ratio`, `explainability_warning`
+- `GET /history` - recent analysis records (with clinician feedback status)
+- `GET /history/summary` - aggregate counts and average confidence
+- `GET /history/drift` - PSI-based prediction drift report
+- `POST /history/{id}/feedback` - submit clinician feedback on a prediction

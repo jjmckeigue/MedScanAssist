@@ -8,6 +8,7 @@ from torch import nn
 from torchvision import models, transforms
 
 from backend.app.config import settings
+from backend.training.data_utils import build_tta_transforms
 
 
 class InvalidImageError(ValueError):
@@ -36,6 +37,7 @@ class ModelService:
         self._model: nn.Module | None = None
         self._transform = self._build_transform(self._image_size)
         self._checkpoint_meta: dict[str, float | int | str] = {}
+        self._temperature: float = 1.0
 
     @staticmethod
     def _build_transform(image_size: int) -> transforms.Compose:
@@ -107,6 +109,7 @@ class ModelService:
         self._image_size = ckpt_image_size
         self._transform = self._build_transform(self._image_size)
         self._checkpoint_loaded = True
+        self._temperature = float(checkpoint.get("temperature", 1.0))
         self._checkpoint_meta = {
             "best_epoch": int(checkpoint.get("best_epoch")) if checkpoint.get("best_epoch") is not None else None,
             "best_val_acc": float(checkpoint.get("best_val_acc"))
@@ -115,6 +118,7 @@ class ModelService:
             "best_val_loss": float(checkpoint.get("best_val_loss"))
             if checkpoint.get("best_val_loss") is not None
             else None,
+            "temperature": self._temperature,
         }
 
     def ensure_ready(self) -> None:
@@ -146,6 +150,21 @@ class ModelService:
         with torch.no_grad():
             return self._model(tensor).squeeze(0).cpu()
 
+    def _predict_logits_tta(self, image: Image.Image) -> torch.Tensor:
+        """Average logits across multiple augmented views of the same image."""
+        self._load_checkpoint_if_available()
+        if not self._checkpoint_loaded or self._model is None:
+            return self._placeholder_logits(image)
+
+        tta_tfs = build_tta_transforms(self._image_size, n_augments=5)
+        all_logits = []
+        with torch.no_grad():
+            for tf in tta_tfs:
+                tensor = tf(image).unsqueeze(0).to(self.device)
+                logits = self._model(tensor).squeeze(0).cpu()
+                all_logits.append(logits)
+        return torch.stack(all_logits).mean(dim=0)
+
     def get_model_info(self) -> dict[str, str | bool | float | int | list[str] | None]:
         self._load_checkpoint_if_available()
         return {
@@ -159,16 +178,19 @@ class ModelService:
             "best_epoch": self._checkpoint_meta.get("best_epoch"),
             "best_val_acc": self._checkpoint_meta.get("best_val_acc"),
             "best_val_loss": self._checkpoint_meta.get("best_val_loss"),
+            "temperature": self._checkpoint_meta.get("temperature", 1.0),
         }
 
     def predict(
-        self, image_bytes: bytes, threshold: float | None = None
+        self, image_bytes: bytes, threshold: float | None = None, tta: bool = False
     ) -> dict[str, float | str | bool | dict[str, float]]:
         image = self._read_image(image_bytes)
-        logits = self._predict_logits(image)
+        logits = self._predict_logits_tta(image) if tta else self._predict_logits(image)
         decision_threshold = float(self.threshold if threshold is None else threshold)
 
-        probabilities = torch.softmax(logits, dim=0).numpy()
+        # Temperature scaling for calibrated probabilities
+        scaled_logits = logits / self._temperature if self._temperature > 0 else logits
+        probabilities = torch.softmax(scaled_logits, dim=0).numpy()
         probability_map = {
             label: float(probabilities[idx]) for idx, label in enumerate(self._class_names)
         }

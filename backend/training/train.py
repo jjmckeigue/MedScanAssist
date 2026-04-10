@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader
 from torchvision import models
 
 from backend.app.config import settings
-from backend.training.data_utils import build_imagefolder_dataset, build_transforms
+from backend.training.data_utils import build_imagefolder_dataset, build_transforms, build_tta_transforms
 
 try:
     import matplotlib
@@ -51,7 +51,10 @@ def freeze_all(model: nn.Module) -> None:
 
 
 def enable_classifier_head(model: nn.Module, arch: str) -> None:
-    if arch == "resnet50":
+    if arch == "simple_cnn":
+        for param in model.classifier.parameters():
+            param.requires_grad = True
+    elif arch == "resnet50":
         for param in model.fc.parameters():
             param.requires_grad = True
     else:
@@ -60,6 +63,8 @@ def enable_classifier_head(model: nn.Module, arch: str) -> None:
 
 
 def enable_last_block(model: nn.Module, arch: str) -> None:
+    if arch == "simple_cnn":
+        return
     if arch == "resnet50":
         for param in model.layer4.parameters():
             param.requires_grad = True
@@ -69,11 +74,15 @@ def enable_last_block(model: nn.Module, arch: str) -> None:
 
 
 def freeze_feature_extractor(model: nn.Module, arch: str) -> None:
+    if arch == "simple_cnn":
+        return
     freeze_all(model)
     enable_classifier_head(model, arch)
 
 
 def unfreeze_last_block_and_head(model: nn.Module, arch: str) -> None:
+    if arch == "simple_cnn":
+        return
     freeze_all(model)
     enable_classifier_head(model, arch)
     enable_last_block(model, arch)
@@ -84,7 +93,43 @@ def unfreeze_all_layers(model: nn.Module) -> None:
         param.requires_grad = True
 
 
+class SimpleCNN(nn.Module):
+    """Lightweight 4-layer CNN baseline for comparison against transfer learning."""
+
+    def __init__(self, num_classes: int, image_size: int = 224) -> None:
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),
+        )
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Dropout(0.3),
+            nn.Linear(256, num_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.classifier(self.features(x))
+
+
 def build_model(num_classes: int, arch: str = "densenet121") -> nn.Module:
+    if arch == "simple_cnn":
+        return SimpleCNN(num_classes)
+
     if arch == "resnet50":
         model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
         model.fc = nn.Linear(model.fc.in_features, num_classes)
@@ -490,6 +535,35 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated subgroup columns to evaluate when metadata is provided.",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--kfold",
+        type=int,
+        default=0,
+        help="If > 1, run stratified k-fold cross-validation instead of a single train/val split.",
+    )
+    parser.add_argument(
+        "--label-smoothing",
+        type=float,
+        default=0.0,
+        help="Label smoothing factor for CrossEntropyLoss (0.0 = off, 0.1 recommended).",
+    )
+    parser.add_argument(
+        "--warmup-epochs",
+        type=int,
+        default=0,
+        help="Number of epochs to linearly warm up the learning rate from 1e-7 to --lr-head.",
+    )
+    parser.add_argument(
+        "--disable-augmentation",
+        action="store_true",
+        help="Disable training augmentation (use plain resize only).",
+    )
+    parser.add_argument(
+        "--arch",
+        type=str,
+        default=None,
+        help="Override model architecture (densenet121, resnet50, simple_cnn). Defaults to MODEL_ARCH env.",
+    )
     return parser.parse_args()
 
 
@@ -878,44 +952,76 @@ def evaluate_split_and_export(
     )
 
 
-def main() -> None:
-    status("Starting training script.")
-    args = parse_args()
-    set_seed(args.seed)
-    status(f"Seed set to {args.seed}.")
+def find_optimal_temperature(
+    model: nn.Module, loader: DataLoader, device: torch.device = torch.device("cpu")
+) -> float:
+    """Find temperature scaling parameter that minimizes NLL on a validation set."""
+    all_logits, all_labels = [], []
+    model.eval()
+    with torch.no_grad():
+        for images, labels in loader:
+            logits = model(images.to(device))
+            all_logits.append(logits.cpu())
+            all_labels.append(labels.cpu())
+    logits_tensor = torch.cat(all_logits)
+    labels_tensor = torch.cat(all_labels)
 
-    dataset_root = settings.dataset_root
-    arch = settings.model_arch.lower()
-    transforms_map = build_transforms(settings.image_size)
-    status(f"Building datasets from {dataset_root}.")
+    best_temp = 1.0
+    best_nll = float("inf")
+    for temp_candidate in np.linspace(0.5, 3.0, 51):
+        scaled = logits_tensor / temp_candidate
+        nll = float(nn.functional.cross_entropy(scaled, labels_tensor).item())
+        if nll < best_nll:
+            best_nll = nll
+            best_temp = float(temp_candidate)
+    return round(best_temp, 3)
+
+
+def train_single_split(
+    args: argparse.Namespace,
+    arch: str,
+    dataset_root: Path,
+    transforms_map: dict[str, object],
+    checkpoint_path: Path,
+    artifact_dir: Path,
+    fold_label: str = "",
+) -> dict[str, float]:
+    """Core training loop for one train/val split. Returns summary metrics dict."""
+    prefix = f"[fold {fold_label}] " if fold_label else ""
 
     train_ds = build_imagefolder_dataset(dataset_root, "train", transforms_map["train"])
     val_ds = build_imagefolder_dataset(dataset_root, "val", transforms_map["val"])
     status(
-        f"Datasets loaded (train={len(train_ds)} images, val={len(val_ds)} images, classes={train_ds.classes})."
+        f"{prefix}Datasets loaded (train={len(train_ds)} images, val={len(val_ds)} images, "
+        f"classes={train_ds.classes})."
     )
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
-    status(f"DataLoaders ready (batch_size={args.batch_size}).")
 
     model = build_model(num_classes=len(train_ds.classes), arch=arch).to("cpu")
-    status(f"Model built ({arch}) on CPU.")
-    criterion_kwargs = {}
+    status(f"{prefix}Model built ({arch}) on CPU.")
+
+    criterion_kwargs: dict = {}
     if not args.disable_class_weighting:
         class_weights = build_class_weight_tensor(train_ds)
         criterion_kwargs["weight"] = class_weights
-        status(f"Using inverse-frequency class weights: {class_weights.tolist()}")
-    else:
-        status("Class weighting disabled.")
+        status(f"{prefix}Using inverse-frequency class weights: {class_weights.tolist()}")
+    if args.label_smoothing > 0:
+        criterion_kwargs["label_smoothing"] = args.label_smoothing
+        status(f"{prefix}Label smoothing: {args.label_smoothing}")
     criterion = nn.CrossEntropyLoss(**criterion_kwargs)
+
     freeze_feature_extractor(model, arch)
     optimizer = build_optimizer(model, args.lr_head)
     scheduler = build_scheduler(optimizer, args)
 
+    # Warmup schedule: linearly ramp LR from near-zero to lr_head over warmup epochs.
+    warmup_epochs = max(0, args.warmup_epochs)
+
     last_block_epochs = min(max(args.epochs_last_block, 0), max(args.epochs_finetune, 0))
     full_unfreeze_epochs = max(0, args.epochs_finetune - last_block_epochs)
-    total_epochs = args.epochs_head + last_block_epochs + full_unfreeze_epochs
+    total_epochs = warmup_epochs + args.epochs_head + last_block_epochs + full_unfreeze_epochs
 
     history: list[dict[str, float]] = []
     best_val_acc = -1.0
@@ -923,33 +1029,41 @@ def main() -> None:
     best_epoch = 0
     early_stop_count = 0
 
-    checkpoint_dir = Path("./backend/checkpoints")
-    artifact_dir = Path("./backend/artifacts")
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = checkpoint_dir / "best_model.pt"
-    status(f"Checkpoint path: {checkpoint_path}")
-    status("Beginning training loop.")
+    status(f"{prefix}Beginning training loop ({total_epochs} epochs).")
 
     for epoch in range(1, total_epochs + 1):
-        status(f"Epoch {epoch}/{total_epochs}: running train/validation.")
-        phase = "head"
-        if epoch == args.epochs_head + 1 and last_block_epochs > 0:
-            status("Switching phase: unfreeze last block + head.")
+        status(f"{prefix}Epoch {epoch}/{total_epochs}: running train/validation.")
+        phase = "warmup"
+
+        if epoch <= warmup_epochs:
+            warmup_lr = 1e-7 + (args.lr_head - 1e-7) * (epoch / max(warmup_epochs, 1))
+            for pg in optimizer.param_groups:
+                pg["lr"] = warmup_lr
+            phase = "warmup"
+        elif epoch == warmup_epochs + 1:
+            for pg in optimizer.param_groups:
+                pg["lr"] = args.lr_head
+            phase = "head"
+        elif epoch == warmup_epochs + args.epochs_head + 1 and last_block_epochs > 0:
+            status(f"{prefix}Switching phase: unfreeze last block + head.")
             unfreeze_last_block_and_head(model, arch)
             optimizer = build_optimizer(model, args.lr_finetune)
             scheduler = build_scheduler(optimizer, args)
             phase = "last_block"
-        elif epoch == args.epochs_head + last_block_epochs + 1 and full_unfreeze_epochs > 0:
-            status("Switching phase: full-network fine-tuning.")
+        elif epoch == warmup_epochs + args.epochs_head + last_block_epochs + 1 and full_unfreeze_epochs > 0:
+            status(f"{prefix}Switching phase: full-network fine-tuning.")
             unfreeze_all_layers(model)
             optimizer = build_optimizer(model, args.lr_finetune)
             scheduler = build_scheduler(optimizer, args)
             phase = "full_finetune"
-        elif epoch > args.epochs_head + last_block_epochs:
+        elif epoch > warmup_epochs + args.epochs_head + last_block_epochs:
             phase = "full_finetune"
-        elif epoch > args.epochs_head:
+        elif epoch > warmup_epochs + args.epochs_head:
             phase = "last_block"
+        else:
+            phase = "head"
 
         train_loss, train_acc = run_epoch(
             model,
@@ -957,7 +1071,7 @@ def main() -> None:
             criterion,
             optimizer,
             heartbeat_seconds=args.heartbeat_seconds,
-            heartbeat_label=f"Epoch {epoch}/{total_epochs} train",
+            heartbeat_label=f"{prefix}Epoch {epoch}/{total_epochs} train",
         )
         with torch.no_grad():
             val_loss, val_acc = run_epoch(
@@ -966,10 +1080,11 @@ def main() -> None:
                 criterion,
                 optimizer=None,
                 heartbeat_seconds=args.heartbeat_seconds,
-                heartbeat_label=f"Epoch {epoch}/{total_epochs} val",
+                heartbeat_label=f"{prefix}Epoch {epoch}/{total_epochs} val",
             )
 
-        scheduler.step(val_loss)
+        if epoch > warmup_epochs:
+            scheduler.step(val_loss)
         current_lr = float(optimizer.param_groups[0]["lr"])
         history.append(
             {
@@ -983,7 +1098,7 @@ def main() -> None:
             }
         )
         print(
-            f"epoch={epoch}/{total_epochs} phase={phase} lr={current_lr:.2e} "
+            f"{prefix}epoch={epoch}/{total_epochs} phase={phase} lr={current_lr:.2e} "
             f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
             f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
         )
@@ -995,6 +1110,10 @@ def main() -> None:
             best_val_loss = val_loss
             best_epoch = epoch
             early_stop_count = 0
+
+            # Find optimal temperature for calibration
+            optimal_temp = find_optimal_temperature(model, val_loader)
+
             torch.save(
                 {
                     "state_dict": model.state_dict(),
@@ -1005,24 +1124,236 @@ def main() -> None:
                     "best_val_acc": best_val_acc,
                     "best_val_loss": best_val_loss,
                     "history": history,
+                    "temperature": optimal_temp,
                 },
                 checkpoint_path,
             )
-            print(f"New best checkpoint saved at epoch {best_epoch}.")
+            print(f"{prefix}New best checkpoint saved at epoch {best_epoch} (temperature={optimal_temp}).")
         else:
             early_stop_count += 1
             if early_stop_count >= args.early_stopping_patience:
                 status(
-                    f"Early stopping triggered at epoch {epoch} "
+                    f"{prefix}Early stopping triggered at epoch {epoch} "
                     f"(best epoch={best_epoch}, val_acc={best_val_acc:.4f})."
                 )
                 break
 
     metrics_csv = artifact_dir / "training_metrics.csv"
     metrics_plot = artifact_dir / "training_curves.png"
-    status("Writing training metrics artifacts.")
+    status(f"{prefix}Writing training metrics artifacts.")
     write_metrics_csv(history, metrics_csv)
     save_training_plot(history, metrics_plot, best_epoch)
+
+    return {
+        "best_epoch": best_epoch,
+        "best_val_acc": best_val_acc,
+        "best_val_loss": best_val_loss,
+    }
+
+
+def run_kfold(args: argparse.Namespace, arch: str, transforms_map: dict[str, object]) -> None:
+    """Stratified k-fold cross-validation. Writes per-fold and aggregate artifacts."""
+    from sklearn.model_selection import StratifiedKFold
+    from torch.utils.data import Subset
+
+    status(f"Starting {args.kfold}-fold cross-validation.")
+    dataset_root = settings.dataset_root
+    artifact_dir = Path("./backend/artifacts")
+    kfold_dir = artifact_dir / "kfold"
+    kfold_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load full train+val combined
+    full_train_ds = build_imagefolder_dataset(dataset_root, "train", transforms_map["train"])
+    try:
+        full_val_ds = build_imagefolder_dataset(dataset_root, "val", transforms_map["train"])
+        combined_targets = full_train_ds.targets + full_val_ds.targets
+        combined_samples = full_train_ds.samples + full_val_ds.samples
+    except FileNotFoundError:
+        combined_targets = full_train_ds.targets
+        combined_samples = full_train_ds.samples
+
+    status(f"Combined dataset: {len(combined_targets)} images for {args.kfold}-fold CV.")
+
+    skf = StratifiedKFold(n_splits=args.kfold, shuffle=True, random_state=args.seed)
+    fold_metrics: list[dict[str, float]] = []
+
+    for fold_idx, (train_indices, val_indices) in enumerate(skf.split(combined_samples, combined_targets), start=1):
+        status(f"=== Fold {fold_idx}/{args.kfold} ===")
+        fold_dir = kfold_dir / f"fold_{fold_idx}"
+        fold_dir.mkdir(parents=True, exist_ok=True)
+        fold_ckpt = fold_dir / "best_model.pt"
+
+        # Create ImageFolder-compatible subset by writing temp symlinks/index
+        # Using Subset approach with a unified dataset
+        from torch.utils.data import ConcatDataset
+
+        all_ds = build_imagefolder_dataset(dataset_root, "train", transforms_map["train"])
+        try:
+            val_ds_raw = build_imagefolder_dataset(dataset_root, "val", transforms_map["train"])
+            combined_ds = ConcatDataset([all_ds, val_ds_raw])
+        except FileNotFoundError:
+            combined_ds = all_ds
+
+        train_subset = Subset(combined_ds, train_indices.tolist())
+        val_eval_tf = build_imagefolder_dataset(dataset_root, "train", transforms_map["val"])
+        try:
+            val_eval_raw = build_imagefolder_dataset(dataset_root, "val", transforms_map["val"])
+            combined_eval = ConcatDataset([val_eval_tf, val_eval_raw])
+        except FileNotFoundError:
+            combined_eval = val_eval_tf
+        val_subset = Subset(combined_eval, val_indices.tolist())
+
+        train_loader = DataLoader(train_subset, batch_size=args.batch_size, shuffle=True, num_workers=0)
+        val_loader = DataLoader(val_subset, batch_size=args.batch_size, shuffle=False, num_workers=0)
+
+        class_names = full_train_ds.classes
+        model = build_model(num_classes=len(class_names), arch=arch).to("cpu")
+
+        criterion_kwargs: dict = {}
+        if not args.disable_class_weighting:
+            class_weights = build_class_weight_tensor(full_train_ds)
+            criterion_kwargs["weight"] = class_weights
+        if args.label_smoothing > 0:
+            criterion_kwargs["label_smoothing"] = args.label_smoothing
+        criterion = nn.CrossEntropyLoss(**criterion_kwargs)
+
+        freeze_feature_extractor(model, arch)
+        optimizer = build_optimizer(model, args.lr_head)
+        scheduler = build_scheduler(optimizer, args)
+
+        warmup_epochs = max(0, args.warmup_epochs)
+        last_block_epochs = min(max(args.epochs_last_block, 0), max(args.epochs_finetune, 0))
+        full_unfreeze_epochs = max(0, args.epochs_finetune - last_block_epochs)
+        total_epochs = warmup_epochs + args.epochs_head + last_block_epochs + full_unfreeze_epochs
+
+        best_val_acc = -1.0
+        best_val_loss = float("inf")
+        best_epoch = 0
+        early_stop_count = 0
+
+        for epoch in range(1, total_epochs + 1):
+            phase = "head"
+            if epoch <= warmup_epochs:
+                warmup_lr = 1e-7 + (args.lr_head - 1e-7) * (epoch / max(warmup_epochs, 1))
+                for pg in optimizer.param_groups:
+                    pg["lr"] = warmup_lr
+                phase = "warmup"
+            elif epoch == warmup_epochs + 1:
+                for pg in optimizer.param_groups:
+                    pg["lr"] = args.lr_head
+            elif epoch == warmup_epochs + args.epochs_head + 1 and last_block_epochs > 0:
+                unfreeze_last_block_and_head(model, arch)
+                optimizer = build_optimizer(model, args.lr_finetune)
+                scheduler = build_scheduler(optimizer, args)
+                phase = "last_block"
+            elif epoch == warmup_epochs + args.epochs_head + last_block_epochs + 1 and full_unfreeze_epochs > 0:
+                unfreeze_all_layers(model)
+                optimizer = build_optimizer(model, args.lr_finetune)
+                scheduler = build_scheduler(optimizer, args)
+                phase = "full_finetune"
+            elif epoch > warmup_epochs + args.epochs_head + last_block_epochs:
+                phase = "full_finetune"
+            elif epoch > warmup_epochs + args.epochs_head:
+                phase = "last_block"
+
+            train_loss, train_acc = run_epoch(
+                model, train_loader, criterion, optimizer,
+                heartbeat_seconds=args.heartbeat_seconds,
+                heartbeat_label=f"Fold {fold_idx} epoch {epoch}/{total_epochs} train",
+            )
+            with torch.no_grad():
+                val_loss, val_acc = run_epoch(
+                    model, val_loader, criterion, optimizer=None,
+                    heartbeat_seconds=args.heartbeat_seconds,
+                    heartbeat_label=f"Fold {fold_idx} epoch {epoch}/{total_epochs} val",
+                )
+
+            if epoch > warmup_epochs:
+                scheduler.step(val_loss)
+
+            print(
+                f"[fold {fold_idx}] epoch={epoch}/{total_epochs} phase={phase} "
+                f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
+                f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
+            )
+
+            if is_improvement(val_acc, best_val_acc, val_loss, best_val_loss, args.early_stopping_min_delta):
+                best_val_acc = val_acc
+                best_val_loss = val_loss
+                best_epoch = epoch
+                early_stop_count = 0
+                torch.save(
+                    {
+                        "state_dict": model.state_dict(),
+                        "class_names": class_names,
+                        "arch": arch,
+                        "image_size": settings.image_size,
+                        "best_epoch": best_epoch,
+                        "best_val_acc": best_val_acc,
+                        "best_val_loss": best_val_loss,
+                    },
+                    fold_ckpt,
+                )
+            else:
+                early_stop_count += 1
+                if early_stop_count >= args.early_stopping_patience:
+                    status(f"[fold {fold_idx}] Early stopping at epoch {epoch}.")
+                    break
+
+        fold_metrics.append({"fold": fold_idx, "best_epoch": best_epoch, "val_acc": best_val_acc, "val_loss": best_val_loss})
+        status(f"[fold {fold_idx}] best_epoch={best_epoch} val_acc={best_val_acc:.4f} val_loss={best_val_loss:.4f}")
+
+    # Aggregate summary
+    accs = [m["val_acc"] for m in fold_metrics]
+    losses = [m["val_loss"] for m in fold_metrics]
+    summary_path = kfold_dir / "kfold_summary.txt"
+    with summary_path.open("w", encoding="utf-8") as fp:
+        fp.write(f"{args.kfold}-fold Cross-Validation Summary\n")
+        fp.write(f"Architecture: {arch}\n\n")
+        for m in fold_metrics:
+            fp.write(f"  Fold {int(m['fold'])}: val_acc={m['val_acc']:.4f}, val_loss={m['val_loss']:.4f}, best_epoch={int(m['best_epoch'])}\n")
+        fp.write(f"\nMean val_acc: {np.mean(accs):.4f} +/- {np.std(accs):.4f}\n")
+        fp.write(f"Mean val_loss: {np.mean(losses):.4f} +/- {np.std(losses):.4f}\n")
+
+    csv_path = kfold_dir / "kfold_summary.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as fp:
+        writer = csv.DictWriter(fp, fieldnames=["fold", "best_epoch", "val_acc", "val_loss"])
+        writer.writeheader()
+        writer.writerows(fold_metrics)
+
+    status(f"K-fold summary: mean_acc={np.mean(accs):.4f} +/- {np.std(accs):.4f}")
+    status(f"K-fold artifacts saved to {kfold_dir}")
+
+
+def main() -> None:
+    status("Starting training script.")
+    args = parse_args()
+    set_seed(args.seed)
+    status(f"Seed set to {args.seed}.")
+
+    dataset_root = settings.dataset_root
+    arch = args.arch or settings.model_arch.lower()
+    augment = not args.disable_augmentation
+    transforms_map = build_transforms(settings.image_size, augment=augment)
+    status(f"Building datasets from {dataset_root} (augmentation={'on' if augment else 'off'}).")
+
+    if args.kfold > 1:
+        run_kfold(args, arch, transforms_map)
+        status("K-fold cross-validation finished. Exiting (no single checkpoint produced).")
+        return
+
+    checkpoint_dir = Path("./backend/checkpoints")
+    artifact_dir = Path("./backend/artifacts")
+    checkpoint_path = checkpoint_dir / "best_model.pt"
+
+    summary = train_single_split(
+        args=args,
+        arch=arch,
+        dataset_root=dataset_root,
+        transforms_map=transforms_map,
+        checkpoint_path=checkpoint_path,
+        artifact_dir=artifact_dir,
+    )
 
     status("Loading best checkpoint for evaluation.")
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -1066,12 +1397,9 @@ def main() -> None:
         )
 
     status(f"Saved best checkpoint to: {checkpoint_path}")
-    status(f"Saved best epoch: {best_epoch}")
-    status(f"Saved metrics CSV to: {metrics_csv}")
+    status(f"Saved best epoch: {summary['best_epoch']}")
     if plt is None:
         status("Matplotlib not installed; skipped PNG artifact plots.")
-    else:
-        status(f"Saved training curves to: {metrics_plot}")
     status("Training script finished successfully.")
 
 
