@@ -10,4 +10,6 @@ services:
         value: production
       - key: REQUIRE_CHECKPOINT
         value: "false"
+      - key: CORS_ORIGINS
+        value: "https://med-scan-assist.vercel.app,https://medscanassist.com"
     healthCheckPath: /health
