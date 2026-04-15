@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.config import settings
+from backend.app.routes.analyze import router as analyze_router
 from backend.app.routes.gradcam import router as gradcam_router
 from backend.app.routes.health import router as health_router
 from backend.app.routes.history import router as history_router
@@ -39,4 +40,5 @@ app.include_router(health_router)
 app.include_router(model_info_router)
 app.include_router(history_router)
 app.include_router(predict_router)
+app.include_router(analyze_router)
 app.include_router(gradcam_router)

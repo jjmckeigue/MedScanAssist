@@ -47,14 +47,17 @@ class GradCamService:
                 last_conv = module
         return last_conv
 
-    def _real_gradcam_heatmap(self, image: Image.Image) -> np.ndarray | None:
+    def _real_gradcam_heatmap_with_logits(
+        self, image: Image.Image
+    ) -> tuple[np.ndarray | None, torch.Tensor | None]:
+        """Compute Grad-CAM heatmap and return (heatmap, logits) from a single forward pass."""
         if not model_service.checkpoint_loaded or model_service.model is None:
-            return None
+            return None, None
 
         model = model_service.model
         target_layer = self._find_last_conv(model)
         if target_layer is None:
-            return None
+            return None, None
 
         activations: dict[str, torch.Tensor] = {}
         gradients: dict[str, torch.Tensor] = {}
@@ -76,11 +79,13 @@ class GradCamService:
             pred_idx = int(torch.argmax(logits, dim=1).item())
             logits[0, pred_idx].backward()
 
-            if "value" not in activations or "value" not in gradients:
-                return None
+            raw_logits = logits.detach().squeeze(0).cpu()
 
-            grads = gradients["value"]  # [1, C, H, W]
-            acts = activations["value"]  # [1, C, H, W]
+            if "value" not in activations or "value" not in gradients:
+                return None, raw_logits
+
+            grads = gradients["value"]
+            acts = activations["value"]
             weights = torch.mean(grads, dim=(2, 3), keepdim=True)
             cam = torch.sum(weights * acts, dim=1, keepdim=True)
             cam = F.relu(cam)
@@ -90,9 +95,9 @@ class GradCamService:
             cam = cam.squeeze().cpu().numpy()
 
             if np.max(cam) <= 0:
-                return None
+                return None, raw_logits
             cam = (cam - np.min(cam)) / (np.max(cam) - np.min(cam) + 1e-8)
-            return cam.astype(np.float32)
+            return cam.astype(np.float32), raw_logits
         finally:
             handle_fwd.remove()
             handle_bwd.remove()
@@ -131,27 +136,97 @@ class GradCamService:
             "explainability_warning": warning,
         }
 
-    def build_overlay_base64(self, image_bytes: bytes) -> dict[str, str | float | bool | None]:
-        pred = model_service.predict(image_bytes)
+    def build_overlay_with_prediction(
+        self, image_bytes: bytes, threshold: float | None = None
+    ) -> dict:
+        """Predict + Grad-CAM in a single forward pass.  Returns all fields needed by AnalyzeResponse."""
         image = model_service.read_image(image_bytes)
         img_np = np.array(image)
 
-        heatmap = self._real_gradcam_heatmap(image)
+        heatmap, logits = self._real_gradcam_heatmap_with_logits(image)
         gradcam_mode = "real"
+
         if heatmap is None:
             heatmap = self._synthetic_heatmap(img_np.shape[0], img_np.shape[1])
             gradcam_mode = "synthetic"
+
+        decision_threshold = float(model_service.threshold if threshold is None else threshold)
+
+        if logits is not None:
+            temperature = model_service._temperature  # noqa: SLF001
+            scaled = logits / temperature if temperature > 0 else logits
+            probs = torch.softmax(scaled, dim=0).numpy()
+            class_names = model_service.class_names
+            prob_map = {label: float(probs[i]) for i, label in enumerate(class_names)}
+            positive_label = class_names[-1]
+            positive_prob = prob_map[positive_label]
+            predicted_label = positive_label if positive_prob >= decision_threshold else class_names[0]
+            confidence = float(max(prob_map.values()))
+            inference_mode = model_service.inference_mode
+        else:
+            pred = model_service.predict(image_bytes, threshold=threshold)
+            predicted_label = str(pred["predicted_label"])
+            confidence = float(pred["confidence"])
+            prob_map = pred["probabilities"]
+            inference_mode = str(pred["inference_mode"])
 
         encoded = self._overlay_image(img_np, heatmap)
         explainability = self._explainability_stats(heatmap)
 
         return {
-            "predicted_label": str(pred["predicted_label"]),
-            "confidence": float(pred["confidence"]),
+            "predicted_label": predicted_label,
+            "confidence": confidence,
+            "probabilities": prob_map,
+            "threshold": decision_threshold,
+            "inference_mode": inference_mode,
+            "model_arch": model_service.model_arch,
+            "checkpoint_loaded": model_service.checkpoint_loaded,
             "heatmap_base64": encoded,
-            "inference_mode": str(pred["inference_mode"]),
-            "model_arch": str(pred["model_arch"]),
-            "checkpoint_loaded": bool(pred["checkpoint_loaded"]),
+            "gradcam_mode": gradcam_mode,
+            "lung_focus_score": float(explainability["lung_focus_score"]),
+            "off_lung_attention_ratio": float(explainability["off_lung_attention_ratio"]),
+            "explainability_warning": explainability["explainability_warning"],
+        }
+
+    def build_overlay_base64(self, image_bytes: bytes) -> dict[str, str | float | bool | None]:
+        image = model_service.read_image(image_bytes)
+        img_np = np.array(image)
+
+        heatmap, logits = self._real_gradcam_heatmap_with_logits(image)
+        gradcam_mode = "real"
+
+        if heatmap is None:
+            heatmap = self._synthetic_heatmap(img_np.shape[0], img_np.shape[1])
+            gradcam_mode = "synthetic"
+
+        # Derive prediction from shared logits when available to avoid a second forward pass.
+        if logits is not None:
+            temperature = model_service._temperature  # noqa: SLF001
+            scaled = logits / temperature if temperature > 0 else logits
+            probs = torch.softmax(scaled, dim=0).numpy()
+            class_names = model_service.class_names
+            prob_map = {label: float(probs[i]) for i, label in enumerate(class_names)}
+            positive_label = class_names[-1]
+            positive_prob = prob_map[positive_label]
+            predicted_label = positive_label if positive_prob >= model_service.threshold else class_names[0]
+            confidence = float(max(prob_map.values()))
+            inference_mode = model_service.inference_mode
+        else:
+            pred = model_service.predict(image_bytes)
+            predicted_label = str(pred["predicted_label"])
+            confidence = float(pred["confidence"])
+            inference_mode = str(pred["inference_mode"])
+
+        encoded = self._overlay_image(img_np, heatmap)
+        explainability = self._explainability_stats(heatmap)
+
+        return {
+            "predicted_label": predicted_label,
+            "confidence": confidence,
+            "heatmap_base64": encoded,
+            "inference_mode": inference_mode,
+            "model_arch": model_service.model_arch,
+            "checkpoint_loaded": model_service.checkpoint_loaded,
             "gradcam_mode": gradcam_mode,
             "lung_focus_score": float(explainability["lung_focus_score"]),
             "off_lung_attention_ratio": float(explainability["off_lung_attention_ratio"]),

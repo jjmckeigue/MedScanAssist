@@ -40,6 +40,33 @@ class GradCamResponse(BaseModel):
     )
 
 
+class AnalyzeResponse(BaseModel):
+    """Combined prediction + Grad-CAM in a single response (one forward pass)."""
+
+    predicted_label: str
+    confidence: float
+    probabilities: dict[str, float]
+    threshold: float
+    inference_mode: str
+    model_arch: str
+    checkpoint_loaded: bool
+    analysis_id: int | None = None
+    heatmap_base64: str = Field(description="Base64-encoded PNG of Grad-CAM overlay.")
+    gradcam_mode: str = Field(
+        description="'real' when computed from model activations, 'synthetic' when using placeholder heatmap."
+    )
+    lung_focus_score: float = Field(
+        description="Fraction of Grad-CAM activation concentrated in a heuristic lung ROI (0-1)."
+    )
+    off_lung_attention_ratio: float = Field(
+        description="Fraction of Grad-CAM activation outside the heuristic lung ROI (0-1)."
+    )
+    explainability_warning: str | None = Field(
+        default=None,
+        description="Warning message when Grad-CAM attention appears off-lung or low-confidence.",
+    )
+
+
 class ModelInfoResponse(BaseModel):
     inference_mode: str
     model_arch: str
