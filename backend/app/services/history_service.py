@@ -137,17 +137,25 @@ class HistoryService:
                     COUNT(*) AS total_reviews,
                     AVG(confidence) AS avg_confidence,
                     SUM(CASE WHEN LOWER(predicted_label) = 'pneumonia' THEN 1 ELSE 0 END) AS pneumonia_count,
-                    SUM(CASE WHEN LOWER(predicted_label) = 'normal' THEN 1 ELSE 0 END) AS normal_count
+                    SUM(CASE WHEN LOWER(predicted_label) = 'normal' THEN 1 ELSE 0 END) AS normal_count,
+                    SUM(CASE WHEN feedback = 'correct' THEN 1 ELSE 0 END) AS feedback_correct,
+                    SUM(CASE WHEN feedback = 'incorrect' THEN 1 ELSE 0 END) AS feedback_incorrect
                 FROM analysis_history
                 """
             ).fetchone()
 
         total = int(summary_row["total_reviews"] or 0)
+        correct = int(summary_row["feedback_correct"] or 0)
+        incorrect = int(summary_row["feedback_incorrect"] or 0)
+        reviewed = correct + incorrect
         return {
             "total_reviews": total,
             "pneumonia_count": int(summary_row["pneumonia_count"] or 0),
             "normal_count": int(summary_row["normal_count"] or 0),
             "avg_confidence": float(summary_row["avg_confidence"] or 0.0),
+            "feedback_correct": correct,
+            "feedback_incorrect": incorrect,
+            "feedback_accuracy": round(correct / reviewed, 4) if reviewed > 0 else None,
         }
 
 

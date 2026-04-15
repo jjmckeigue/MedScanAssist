@@ -23,8 +23,16 @@ class Settings(BaseSettings):
     default_threshold: float = Field(default=0.5, alias="DEFAULT_THRESHOLD")
     require_checkpoint: bool = Field(default=False, alias="REQUIRE_CHECKPOINT")
     max_upload_bytes: int = Field(default=8 * 1024 * 1024, alias="MAX_UPLOAD_BYTES")
+    cors_origins: str = Field(
+        default="http://localhost:5173,http://127.0.0.1:5173",
+        alias="CORS_ORIGINS",
+    )
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
     @property
     def class_name_list(self) -> list[str]:

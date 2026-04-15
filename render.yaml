@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: medscanassist-api
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: .
+    plan: free
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: APP_HOST
+        value: 0.0.0.0
+      - key: APP_PORT
+        value: 10000
+      - key: REQUIRE_CHECKPOINT
+        value: "false"
+    healthCheckPath: /health
