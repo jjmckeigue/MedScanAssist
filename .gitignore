@@ -33,7 +33,8 @@ dist/
 data/raw/
 data/processed/
 backend/artifacts/
-backend/checkpoints/
+backend/checkpoints/*
+!backend/checkpoints/best_model.pt
 backend/logs/
 backend/uploads/
 

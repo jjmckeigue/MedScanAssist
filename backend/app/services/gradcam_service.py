@@ -136,10 +136,11 @@ class GradCamService:
         image = model_service.read_image(image_bytes)
         img_np = np.array(image)
 
-        # Prefer true Grad-CAM when checkpoint-backed model is available.
         heatmap = self._real_gradcam_heatmap(image)
+        gradcam_mode = "real"
         if heatmap is None:
             heatmap = self._synthetic_heatmap(img_np.shape[0], img_np.shape[1])
+            gradcam_mode = "synthetic"
 
         encoded = self._overlay_image(img_np, heatmap)
         explainability = self._explainability_stats(heatmap)
@@ -151,6 +152,7 @@ class GradCamService:
             "inference_mode": str(pred["inference_mode"]),
             "model_arch": str(pred["model_arch"]),
             "checkpoint_loaded": bool(pred["checkpoint_loaded"]),
+            "gradcam_mode": gradcam_mode,
             "lung_focus_score": float(explainability["lung_focus_score"]),
             "off_lung_attention_ratio": float(explainability["off_lung_attention_ratio"]),
             "explainability_warning": explainability["explainability_warning"],

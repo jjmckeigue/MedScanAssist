@@ -25,6 +25,9 @@ class GradCamResponse(BaseModel):
     inference_mode: str
     model_arch: str
     checkpoint_loaded: bool
+    gradcam_mode: str = Field(
+        description="'real' when computed from model activations, 'synthetic' when using placeholder heatmap."
+    )
     lung_focus_score: float = Field(
         description="Fraction of Grad-CAM activation concentrated in a heuristic lung ROI (0-1)."
     )
