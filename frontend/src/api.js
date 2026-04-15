@@ -78,6 +78,7 @@ export const getHistorySummary = async () => {
 
 export const predictImage = (file, threshold) => uploadImage("/predict", file, { threshold });
 export const generateGradCam = (file) => uploadImage("/gradcam", file);
+export const analyzeImage = (file, threshold) => uploadImage("/analyze", file, { threshold });
 
 export const submitFeedback = async (recordId, feedback) => {
   const response = await fetchWithTimeout(`${API_BASE_URL}/history/${recordId}/feedback`, {

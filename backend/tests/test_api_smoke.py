@@ -98,6 +98,34 @@ def test_predict_rejects_oversized_upload() -> None:
     assert "max allowed size" in response.json()["detail"].lower()
 
 
+# ─── Analyze (combined predict + Grad-CAM) ───
+
+def test_analyze_success() -> None:
+    image_bytes = make_test_png_bytes()
+    response = client.post("/analyze", files={"file": ("sample.png", image_bytes, "image/png")})
+    assert response.status_code == 200
+    payload = response.json()
+    assert "predicted_label" in payload
+    assert "probabilities" in payload
+    assert "heatmap_base64" in payload
+    assert payload["inference_mode"] in {"checkpoint", "placeholder"}
+    assert payload["gradcam_mode"] in {"real", "synthetic"}
+    assert 0.0 <= payload["lung_focus_score"] <= 1.0
+    assert isinstance(payload.get("analysis_id"), int)
+
+
+def test_analyze_threshold_override() -> None:
+    image_bytes = make_test_png_bytes()
+    response = client.post("/analyze?threshold=0.9", files={"file": ("sample.png", image_bytes, "image/png")})
+    assert response.status_code == 200
+    assert abs(response.json()["threshold"] - 0.9) < 1e-9
+
+
+def test_analyze_rejects_non_image() -> None:
+    response = client.post("/analyze", files={"file": ("bad.txt", b"hello", "text/plain")})
+    assert response.status_code == 400
+
+
 # ─── Grad-CAM ───
 
 def test_gradcam_success() -> None:

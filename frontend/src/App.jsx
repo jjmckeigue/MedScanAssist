@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  generateGradCam,
+  analyzeImage,
   getHistory,
   getHistorySummary,
   getModelInfo,
   healthCheck,
-  predictImage,
   submitFeedback
 } from "./api";
 
@@ -105,10 +104,29 @@ function App() {
     setError("");
     setLoading(true);
     try {
-      const pred = await predictImage(file, threshold.toFixed(2));
-      setPrediction(pred);
-      const cam = await generateGradCam(file);
-      setGradcam(cam);
+      const result = await analyzeImage(file, threshold.toFixed(2));
+      setPrediction({
+        predicted_label: result.predicted_label,
+        confidence: result.confidence,
+        probabilities: result.probabilities,
+        threshold: result.threshold,
+        inference_mode: result.inference_mode,
+        model_arch: result.model_arch,
+        checkpoint_loaded: result.checkpoint_loaded,
+        analysis_id: result.analysis_id,
+      });
+      setGradcam({
+        predicted_label: result.predicted_label,
+        confidence: result.confidence,
+        heatmap_base64: result.heatmap_base64,
+        inference_mode: result.inference_mode,
+        model_arch: result.model_arch,
+        checkpoint_loaded: result.checkpoint_loaded,
+        gradcam_mode: result.gradcam_mode,
+        lung_focus_score: result.lung_focus_score,
+        off_lung_attention_ratio: result.off_lung_attention_ratio,
+        explainability_warning: result.explainability_warning,
+      });
       await refreshHistory();
     } catch (err) {
       setError(err.message);
