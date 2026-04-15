@@ -12,8 +12,8 @@ import {
 const MAX_UPLOAD_MB = Number(import.meta.env.VITE_MAX_UPLOAD_MB || 8);
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const DECISION_PRESETS = {
-  screening: 0.65,
-  balanced: 0.9
+  screening: 0.35,
+  balanced: 0.45
 };
 const BRAND_ASSETS = {
   light: "/branding/logo_light.png"
@@ -387,8 +387,9 @@ function App() {
                   </button>
                 </div>
                 <small>
-                  Screening sets threshold to {DECISION_PRESETS.screening.toFixed(2)}. Balanced sets{" "}
-                  {DECISION_PRESETS.balanced.toFixed(2)}.
+                  Screening ({DECISION_PRESETS.screening.toFixed(2)}) maximizes F1/sensitivity.
+                  Balanced ({DECISION_PRESETS.balanced.toFixed(2)}) optimizes Youden-J index.
+                  Both derived from threshold analysis on test data.
                 </small>
               </div>
 
@@ -471,13 +472,22 @@ function App() {
               <summary>Grad-CAM view</summary>
               <section className="disclosure-body">
                 <h3>Grad-CAM</h3>
-                {gradcam?.explainability_warning && (
+                {gradcam?.gradcam_mode === "synthetic" && (
+                  <p className="attention-warning">
+                    Synthetic heatmap: no trained checkpoint is loaded. This overlay is a
+                    center-weighted placeholder and does not reflect real model activations.
+                  </p>
+                )}
+                {gradcam?.explainability_warning && gradcam?.gradcam_mode === "real" && (
                   <p className="attention-warning">{gradcam.explainability_warning}</p>
                 )}
                 {gradcam && (
                   <p className="muted">
-                    Lung focus: {(gradcam.lung_focus_score * 100).toFixed(1)}% | Off-lung attention:{" "}
-                    {(gradcam.off_lung_attention_ratio * 100).toFixed(1)}%
+                    Mode: {gradcam.gradcam_mode === "real" ? "Real Grad-CAM" : "Synthetic placeholder"}
+                    {gradcam.gradcam_mode === "real" && (
+                      <> | Lung focus: {(gradcam.lung_focus_score * 100).toFixed(1)}% | Off-lung:{" "}
+                      {(gradcam.off_lung_attention_ratio * 100).toFixed(1)}%</>
+                    )}
                   </p>
                 )}
                 <div className="cam-wrapper">
