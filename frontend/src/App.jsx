@@ -105,11 +105,9 @@ function App() {
     setError("");
     setLoading(true);
     try {
-      const [pred, cam] = await Promise.all([
-        predictImage(file, threshold.toFixed(2)),
-        generateGradCam(file)
-      ]);
+      const pred = await predictImage(file, threshold.toFixed(2));
       setPrediction(pred);
+      const cam = await generateGradCam(file);
       setGradcam(cam);
       await refreshHistory();
     } catch (err) {

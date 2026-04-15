@@ -15,6 +15,6 @@ RUN pip install --upgrade pip && pip install -r /app/backend/requirements.txt
 
 COPY . /app
 
-EXPOSE ${APP_PORT:-8000}
+EXPOSE ${PORT:-8000}
 
-CMD uvicorn backend.app.main:app --host ${APP_HOST:-0.0.0.0} --port ${APP_PORT:-8000}
+CMD uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000}
