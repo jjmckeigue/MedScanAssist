@@ -17,5 +17,6 @@ backend/.ruff_cache
 backend/tests
 data/raw
 data/processed
-backend/checkpoints
+backend/checkpoints/*
+!backend/checkpoints/best_model.pt
 backend/artifacts
