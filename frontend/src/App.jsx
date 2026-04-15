@@ -547,7 +547,7 @@ function App() {
 
           <section className="grid metrics-grid">
             <article className="card metric-card">
-              <h3>Total Reviewed</h3>
+              <h3>Total Analyzed</h3>
               <p className="metric-value">{historySummary?.total_reviews ?? 0}</p>
             </article>
             <article className="card metric-card">
@@ -563,6 +563,23 @@ function App() {
               <p className="metric-value">
                 {historySummary ? `${(historySummary.avg_confidence * 100).toFixed(1)}%` : "0.0%"}
               </p>
+            </article>
+            <article className="card metric-card">
+              <h3>Confirmed Correct</h3>
+              <p className="metric-value metric-correct">{historySummary?.feedback_correct ?? 0}</p>
+            </article>
+            <article className="card metric-card">
+              <h3>Flagged Incorrect</h3>
+              <p className="metric-value metric-incorrect">{historySummary?.feedback_incorrect ?? 0}</p>
+            </article>
+            <article className="card metric-card span-2">
+              <h3>Clinician-Reviewed Accuracy</h3>
+              <p className="metric-value">
+                {historySummary?.feedback_accuracy != null
+                  ? `${(historySummary.feedback_accuracy * 100).toFixed(1)}%`
+                  : "No reviews yet"}
+              </p>
+              <p className="muted metric-sub">Based on clinician feedback only</p>
             </article>
           </section>
 

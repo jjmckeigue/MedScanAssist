@@ -403,6 +403,10 @@ button:disabled {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.metrics-grid .span-2 {
+  grid-column: span 2;
+}
+
 .metric-card {
   min-height: 120px;
   display: flex;
@@ -416,6 +420,19 @@ button:disabled {
   line-height: 1.1;
   font-weight: 700;
   color: #114395;
+}
+
+.metric-correct {
+  color: var(--ok-text);
+}
+
+.metric-incorrect {
+  color: var(--danger);
+}
+
+.metric-sub {
+  margin: 0.25rem 0 0;
+  font-size: 0.82rem;
 }
 
 .preview {

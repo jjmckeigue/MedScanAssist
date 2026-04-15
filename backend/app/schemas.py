@@ -79,6 +79,11 @@ class AnalysisHistorySummary(BaseModel):
     pneumonia_count: int
     normal_count: int
     avg_confidence: float
+    feedback_correct: int = 0
+    feedback_incorrect: int = 0
+    feedback_accuracy: float | None = Field(
+        default=None, description="Correct / (correct + incorrect) among reviewed predictions, or null if none reviewed."
+    )
 
 
 class DriftBin(BaseModel):
