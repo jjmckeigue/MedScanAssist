@@ -6,3 +6,4 @@ pydantic-settings
 numpy
 pillow
 opencv-python-headless
+onnxruntime

@@ -1,14 +1,16 @@
+from __future__ import annotations
+
+import json
 from io import BytesIO
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, UnidentifiedImageError
-import torch
-from torch import nn
-from torchvision import models, transforms
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from backend.app.config import settings
-from backend.training.data_utils import build_tta_transforms
+
+IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
 class InvalidImageError(ValueError):
@@ -19,35 +21,38 @@ class CheckpointRequiredError(RuntimeError):
     """Raised when strict checkpoint mode is enabled but weights are missing."""
 
 
+def _softmax(x: np.ndarray) -> np.ndarray:
+    e = np.exp(x - np.max(x))
+    return e / e.sum()
+
+
+def _preprocess(image: Image.Image, image_size: int) -> np.ndarray:
+    """PIL image → float32 NCHW array with ImageNet normalization."""
+    resized = image.resize((image_size, image_size), Image.BILINEAR)
+    arr = np.array(resized, dtype=np.float32) / 255.0
+    arr = (arr - IMAGENET_MEAN) / IMAGENET_STD
+    arr = arr.transpose(2, 0, 1)  # HWC → CHW
+    return arr[np.newaxis, ...]  # (1, 3, H, W)
+
+
 class ModelService:
-    """CPU inference service with checkpoint-first loading and explicit fallback mode."""
+    """ONNX Runtime inference service with placeholder fallback."""
 
     def __init__(self) -> None:
-        self.device = torch.device("cpu")
         self.threshold = settings.default_threshold
         self.default_class_names = settings.class_name_list
         self.default_image_size = settings.image_size
         self.default_arch = settings.model_arch.lower()
         self._checkpoint_path = Path(settings.checkpoint_path)
+        self._model_meta_path = Path(settings.model_meta_path)
 
         self._checkpoint_loaded = False
         self._arch = self.default_arch
         self._class_names = self.default_class_names
         self._image_size = self.default_image_size
-        self._model: nn.Module | None = None
-        self._transform = self._build_transform(self._image_size)
+        self._session = None
         self._checkpoint_meta: dict[str, float | int | str] = {}
         self._temperature: float = 1.0
-
-    @staticmethod
-    def _build_transform(image_size: int) -> transforms.Compose:
-        return transforms.Compose(
-            [
-                transforms.Resize((image_size, image_size)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ]
-        )
 
     @property
     def checkpoint_loaded(self) -> bool:
@@ -65,24 +70,6 @@ class ModelService:
     def inference_mode(self) -> str:
         return "checkpoint" if self._checkpoint_loaded else "placeholder"
 
-    @property
-    def model(self) -> nn.Module | None:
-        return self._model
-
-    @property
-    def transform(self) -> transforms.Compose:
-        return self._transform
-
-    def _build_model(self, arch: str, num_classes: int) -> nn.Module:
-        if arch == "resnet50":
-            model = models.resnet50(weights=None)
-            model.fc = nn.Linear(model.fc.in_features, num_classes)
-            return model
-
-        model = models.densenet121(weights=None)
-        model.classifier = nn.Linear(model.classifier.in_features, num_classes)
-        return model
-
     def _load_checkpoint_if_available(self) -> None:
         if self._checkpoint_loaded:
             return
@@ -92,32 +79,27 @@ class ModelService:
                 raise CheckpointRequiredError(f"Checkpoint not found at {self._checkpoint_path}")
             return
 
-        checkpoint = torch.load(self._checkpoint_path, map_location=self.device)
-        state_dict = checkpoint["state_dict"]
-        ckpt_arch = str(checkpoint.get("arch", self.default_arch)).lower()
-        ckpt_classes = checkpoint.get("class_names") or checkpoint.get("classes") or self.default_class_names
-        ckpt_image_size = int(checkpoint.get("image_size", self.default_image_size))
+        import onnxruntime as ort
 
-        model = self._build_model(ckpt_arch, len(ckpt_classes))
-        model.load_state_dict(state_dict)
-        model.to(self.device)
-        model.eval()
+        self._session = ort.InferenceSession(
+            str(self._checkpoint_path),
+            providers=["CPUExecutionProvider"],
+        )
 
-        self._model = model
-        self._arch = ckpt_arch
-        self._class_names = [str(name) for name in ckpt_classes]
-        self._image_size = ckpt_image_size
-        self._transform = self._build_transform(self._image_size)
+        meta: dict = {}
+        if self._model_meta_path.exists():
+            meta = json.loads(self._model_meta_path.read_text())
+
+        self._arch = str(meta.get("arch", self.default_arch)).lower()
+        self._class_names = meta.get("class_names", self.default_class_names)
+        self._class_names = [str(c) for c in self._class_names]
+        self._image_size = int(meta.get("image_size", self.default_image_size))
+        self._temperature = float(meta.get("temperature", 1.0))
         self._checkpoint_loaded = True
-        self._temperature = float(checkpoint.get("temperature", 1.0))
         self._checkpoint_meta = {
-            "best_epoch": int(checkpoint.get("best_epoch")) if checkpoint.get("best_epoch") is not None else None,
-            "best_val_acc": float(checkpoint.get("best_val_acc"))
-            if checkpoint.get("best_val_acc") is not None
-            else None,
-            "best_val_loss": float(checkpoint.get("best_val_loss"))
-            if checkpoint.get("best_val_loss") is not None
-            else None,
+            "best_epoch": meta.get("best_epoch"),
+            "best_val_acc": meta.get("best_val_acc"),
+            "best_val_loss": meta.get("best_val_loss"),
             "temperature": self._temperature,
         }
 
@@ -136,34 +118,57 @@ class ModelService:
         return self._read_image(image_bytes)
 
     @staticmethod
-    def _placeholder_logits(image: Image.Image) -> torch.Tensor:
+    def _placeholder_logits(image: Image.Image) -> np.ndarray:
         pixels = np.asarray(image, dtype=np.float32)
         signal = float(pixels.mean() / 255.0)
-        return torch.tensor([1.0 - signal, signal], dtype=torch.float32)
+        return np.array([1.0 - signal, signal], dtype=np.float32)
 
-    def _predict_logits(self, image: Image.Image) -> torch.Tensor:
+    def _run_onnx(self, input_tensor: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
+        """Run ONNX session.  Returns (logits, activations_or_None)."""
+        assert self._session is not None
+        output_names = [o.name for o in self._session.get_outputs()]
+        results = self._session.run(output_names, {"input": input_tensor})
+        logits = results[0].squeeze(0)  # (num_classes,)
+        activations = results[1] if len(results) > 1 else None  # (1, C, H, W)
+        return logits, activations
+
+    def _predict_logits(self, image: Image.Image) -> np.ndarray:
         self._load_checkpoint_if_available()
-        if not self._checkpoint_loaded or self._model is None:
+        if not self._checkpoint_loaded or self._session is None:
+            return self._placeholder_logits(image)
+        tensor = _preprocess(image, self._image_size)
+        logits, _ = self._run_onnx(tensor)
+        return logits
+
+    def _predict_logits_tta(self, image: Image.Image) -> np.ndarray:
+        """Average logits across augmented views (PIL-based TTA)."""
+        self._load_checkpoint_if_available()
+        if not self._checkpoint_loaded or self._session is None:
             return self._placeholder_logits(image)
 
-        tensor = self._transform(image).unsqueeze(0).to(self.device)
-        with torch.no_grad():
-            return self._model(tensor).squeeze(0).cpu()
-
-    def _predict_logits_tta(self, image: Image.Image) -> torch.Tensor:
-        """Average logits across multiple augmented views of the same image."""
-        self._load_checkpoint_if_available()
-        if not self._checkpoint_loaded or self._model is None:
-            return self._placeholder_logits(image)
-
-        tta_tfs = build_tta_transforms(self._image_size, n_augments=5)
+        views: list[Image.Image] = [
+            image,
+            ImageOps.mirror(image),
+            image.rotate(5, resample=Image.BILINEAR, expand=False),
+            image.rotate(-5, resample=Image.BILINEAR, expand=False),
+        ]
         all_logits = []
-        with torch.no_grad():
-            for tf in tta_tfs:
-                tensor = tf(image).unsqueeze(0).to(self.device)
-                logits = self._model(tensor).squeeze(0).cpu()
-                all_logits.append(logits)
-        return torch.stack(all_logits).mean(dim=0)
+        for v in views:
+            tensor = _preprocess(v, self._image_size)
+            logits, _ = self._run_onnx(tensor)
+            all_logits.append(logits)
+        return np.mean(all_logits, axis=0)
+
+    def predict_with_activations(
+        self, image: Image.Image
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+        """Return (logits, activations) for Eigen-CAM.  None when in placeholder mode."""
+        self._load_checkpoint_if_available()
+        if not self._checkpoint_loaded or self._session is None:
+            return None, None
+        tensor = _preprocess(image, self._image_size)
+        logits, activations = self._run_onnx(tensor)
+        return logits, activations
 
     def get_model_info(self) -> dict[str, str | bool | float | int | list[str] | None]:
         self._load_checkpoint_if_available()
@@ -188,9 +193,8 @@ class ModelService:
         logits = self._predict_logits_tta(image) if tta else self._predict_logits(image)
         decision_threshold = float(self.threshold if threshold is None else threshold)
 
-        # Temperature scaling for calibrated probabilities
         scaled_logits = logits / self._temperature if self._temperature > 0 else logits
-        probabilities = torch.softmax(scaled_logits, dim=0).numpy()
+        probabilities = _softmax(scaled_logits)
         probability_map = {
             label: float(probabilities[idx]) for idx, label in enumerate(self._class_names)
         }
