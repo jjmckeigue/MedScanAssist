@@ -13,7 +13,10 @@ class Settings(BaseSettings):
     dataset_root: Path = Field(default=Path("./data/raw/chest_xray"), alias="DATASET_ROOT")
     upload_dir: Path = Field(default=Path("./backend/uploads"), alias="UPLOAD_DIR")
     checkpoint_path: Path = Field(
-        default=Path("./backend/checkpoints/best_model.pt"), alias="CHECKPOINT_PATH"
+        default=Path("./backend/checkpoints/best_model.onnx"), alias="CHECKPOINT_PATH"
+    )
+    model_meta_path: Path = Field(
+        default=Path("./backend/checkpoints/model_meta.json"), alias="MODEL_META_PATH"
     )
     history_db_path: Path = Field(default=Path("./backend/artifacts/history.db"), alias="HISTORY_DB_PATH")
 
