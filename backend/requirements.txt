@@ -5,6 +5,4 @@ pydantic
 pydantic-settings
 numpy
 pillow
-torch
-torchvision
 opencv-python-headless
