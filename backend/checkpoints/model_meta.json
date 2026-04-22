@@ -1,0 +1,12 @@
+{
+  "arch": "densenet121",
+  "class_names": [
+    "NORMAL",
+    "PNEUMONIA"
+  ],
+  "image_size": 224,
+  "temperature": 0.5,
+  "best_epoch": 4,
+  "best_val_acc": 0.9375,
+  "best_val_loss": 0.42940807342529297
+}
