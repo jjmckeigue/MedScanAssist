@@ -198,7 +198,9 @@ Outputs: `backend/artifacts/kfold/fold_*/best_model.pt` and `backend/artifacts/k
 - **Clinician feedback**: `POST /history/{id}/feedback` with `{"feedback": "correct"}` or `{"feedback": "incorrect"}` to flag predictions. Displayed in the Review History UI.
 - **Prediction drift monitoring**: `GET /history/drift` computes Population Stability Index (PSI) between baseline and recent prediction confidence distributions, alerting when distribution shift exceeds the 0.2 threshold.
 
-## API Endpoints (v1)
+## API Endpoints (v2)
+
+### Core Inference
 
 - `GET /health` - service health check
 - `GET /model-info` - returns model/checkpoint metadata, runtime mode, and temperature scaling factor
@@ -207,7 +209,26 @@ Outputs: `backend/artifacts/kfold/fold_*/best_model.pt` and `backend/artifacts/k
   - optional query: `tta` (true/false) for test-time augmentation
 - `POST /gradcam` - returns Grad-CAM overlay image (base64 PNG) for uploaded CXR
   - includes heuristic explainability safety fields: `lung_focus_score`, `off_lung_attention_ratio`, `explainability_warning`
+- `POST /analyze` - combined prediction + Grad-CAM in a single request
+  - optional query: `patient_id` to link analysis to a patient profile
+  - uploaded X-ray images are persisted to `UPLOAD_DIR` for later review
+
+### Analysis History
+
 - `GET /history` - recent analysis records (with clinician feedback status)
 - `GET /history/summary` - aggregate counts and average confidence
 - `GET /history/drift` - PSI-based prediction drift report
 - `POST /history/{id}/feedback` - submit clinician feedback on a prediction
+
+### Patient Profiles
+
+- `POST /patients` - create a patient profile (name, DOB, MRN, notes)
+- `GET /patients` - list/search patients (query: `search`, `limit`, `offset`)
+- `GET /patients/{id}` - get patient detail with linked analysis history
+- `PUT /patients/{id}` - update patient profile
+- `DELETE /patients/{id}` - delete patient (analyses are unlinked, not deleted)
+- `GET /patients/{id}/progression` - confidence progression data over time
+
+### Image Serving
+
+- `GET /images/{filename}` - serve a stored X-ray image by filename

@@ -78,7 +78,8 @@ export const getHistorySummary = async () => {
 
 export const predictImage = (file, threshold) => uploadImage("/predict", file, { threshold });
 export const generateGradCam = (file) => uploadImage("/gradcam", file);
-export const analyzeImage = (file, threshold) => uploadImage("/analyze", file, { threshold });
+export const analyzeImage = (file, threshold, patientId) =>
+  uploadImage("/analyze", file, { threshold, patient_id: patientId });
 
 export const submitFeedback = async (recordId, feedback) => {
   const response = await fetchWithTimeout(`${API_BASE_URL}/history/${recordId}/feedback`, {
@@ -92,3 +93,59 @@ export const submitFeedback = async (recordId, feedback) => {
   }
   return parseJsonSafely(response);
 };
+
+// ---- Patient API ----
+
+export const getPatients = async (search = "", limit = 100, offset = 0) => {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (search) params.append("search", search);
+  const response = await fetchWithTimeout(`${API_BASE_URL}/patients?${params}`);
+  if (!response.ok) throw new Error("Failed to load patients");
+  return parseJsonSafely(response);
+};
+
+export const getPatient = async (id) => {
+  const response = await fetchWithTimeout(`${API_BASE_URL}/patients/${id}`);
+  if (!response.ok) throw new Error("Patient not found");
+  return parseJsonSafely(response);
+};
+
+export const createPatient = async (data) => {
+  const response = await fetchWithTimeout(`${API_BASE_URL}/patients`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data)
+  });
+  if (!response.ok) {
+    const payload = await parseJsonSafely(response);
+    throw new Error(payload.detail || "Failed to create patient");
+  }
+  return parseJsonSafely(response);
+};
+
+export const updatePatient = async (id, data) => {
+  const response = await fetchWithTimeout(`${API_BASE_URL}/patients/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data)
+  });
+  if (!response.ok) {
+    const payload = await parseJsonSafely(response);
+    throw new Error(payload.detail || "Failed to update patient");
+  }
+  return parseJsonSafely(response);
+};
+
+export const deletePatient = async (id) => {
+  const response = await fetchWithTimeout(`${API_BASE_URL}/patients/${id}`, { method: "DELETE" });
+  if (!response.ok) throw new Error("Failed to delete patient");
+  return parseJsonSafely(response);
+};
+
+export const getPatientProgression = async (id) => {
+  const response = await fetchWithTimeout(`${API_BASE_URL}/patients/${id}/progression`);
+  if (!response.ok) throw new Error("Failed to load progression data");
+  return parseJsonSafely(response);
+};
+
+export const imageUrl = (filename) => `${API_BASE_URL}/images/${filename}`;
