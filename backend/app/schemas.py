@@ -102,6 +102,8 @@ class AnalysisHistoryRecord(BaseModel):
     checkpoint_loaded: bool
     probabilities: dict[str, float]
     feedback: str | None = None
+    patient_id: int | None = None
+    image_path: str | None = None
 
 
 class AnalysisHistorySummary(BaseModel):
@@ -114,6 +116,59 @@ class AnalysisHistorySummary(BaseModel):
     feedback_accuracy: float | None = Field(
         default=None, description="Correct / (correct + incorrect) among reviewed predictions, or null if none reviewed."
     )
+
+
+# ---- Patient schemas ----
+
+
+class PatientCreate(BaseModel):
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+    date_of_birth: str | None = Field(default=None, description="ISO date string (YYYY-MM-DD).")
+    medical_record_number: str | None = Field(default=None, max_length=50)
+    notes: str = Field(default="", max_length=2000)
+
+
+class PatientUpdate(BaseModel):
+    first_name: str | None = Field(default=None, min_length=1, max_length=100)
+    last_name: str | None = Field(default=None, min_length=1, max_length=100)
+    date_of_birth: str | None = None
+    medical_record_number: str | None = Field(default=None, max_length=50)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class PatientResponse(BaseModel):
+    id: int
+    created_at_utc: str
+    updated_at_utc: str
+    first_name: str
+    last_name: str
+    date_of_birth: str | None = None
+    medical_record_number: str | None = None
+    notes: str = ""
+
+
+class PatientListResponse(BaseModel):
+    patients: list[PatientResponse]
+    total: int
+
+
+class PatientDetailResponse(PatientResponse):
+    analyses: list[AnalysisHistoryRecord] = []
+    analysis_count: int = 0
+
+
+class ProgressionPoint(BaseModel):
+    id: int
+    created_at_utc: str
+    predicted_label: str
+    confidence: float
+    threshold: float
+
+
+class PatientProgressionResponse(BaseModel):
+    patient_id: int
+    points: list[ProgressionPoint]
 
 
 class DriftBin(BaseModel):

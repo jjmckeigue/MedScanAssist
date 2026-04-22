@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 
 from backend.app.config import settings
@@ -13,6 +15,7 @@ router = APIRouter(tags=["inference"])
 async def analyze(
     file: UploadFile = File(...),
     threshold: float | None = Query(default=None, ge=0.0, le=1.0),
+    patient_id: int | None = Query(default=None, description="Link this analysis to a patient profile."),
 ) -> AnalyzeResponse:
     """Combined prediction + Grad-CAM in a single request (one forward pass)."""
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -35,6 +38,18 @@ async def analyze(
     except InvalidImageError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    image_filename: str | None = None
+    try:
+        ext = (file.filename or "upload.png").rsplit(".", 1)[-1].lower()
+        if ext not in ("png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff"):
+            ext = "png"
+        image_filename = f"{uuid.uuid4().hex}.{ext}"
+        dest = settings.upload_dir / image_filename
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(image_bytes)
+    except Exception:
+        image_filename = None
+
     analysis_id = history_service.add_record(
         file_name=file.filename,
         prediction={
@@ -46,6 +61,8 @@ async def analyze(
             "model_arch": result["model_arch"],
             "checkpoint_loaded": result["checkpoint_loaded"],
         },
+        patient_id=patient_id,
+        image_path=image_filename,
     )
     result["analysis_id"] = analysis_id
     return AnalyzeResponse(**result)

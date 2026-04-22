@@ -38,14 +38,25 @@ class HistoryService:
                 )
                 """
             )
-            # Add feedback column if it doesn't exist (safe migration for existing DBs).
-            try:
-                conn.execute("ALTER TABLE analysis_history ADD COLUMN feedback TEXT DEFAULT NULL")
-            except Exception:
-                pass
+            # Safe migrations for existing DBs.
+            for col_sql in (
+                "ALTER TABLE analysis_history ADD COLUMN feedback TEXT DEFAULT NULL",
+                "ALTER TABLE analysis_history ADD COLUMN patient_id INTEGER DEFAULT NULL",
+                "ALTER TABLE analysis_history ADD COLUMN image_path TEXT DEFAULT NULL",
+            ):
+                try:
+                    conn.execute(col_sql)
+                except Exception:
+                    pass
             conn.commit()
 
-    def add_record(self, file_name: str | None, prediction: dict) -> int:
+    def add_record(
+        self,
+        file_name: str | None,
+        prediction: dict,
+        patient_id: int | None = None,
+        image_path: str | None = None,
+    ) -> int:
         created_at_utc = datetime.now(tz=timezone.utc).isoformat()
         with self._connect() as conn:
             cursor = conn.execute(
@@ -59,8 +70,10 @@ class HistoryService:
                     inference_mode,
                     model_arch,
                     checkpoint_loaded,
-                    probabilities_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    probabilities_json,
+                    patient_id,
+                    image_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     created_at_utc,
@@ -72,6 +85,8 @@ class HistoryService:
                     str(prediction["model_arch"]),
                     1 if bool(prediction["checkpoint_loaded"]) else 0,
                     json.dumps(prediction["probabilities"]),
+                    patient_id,
+                    image_path,
                 ),
             )
             conn.commit()
@@ -102,7 +117,9 @@ class HistoryService:
                     model_arch,
                     checkpoint_loaded,
                     probabilities_json,
-                    feedback
+                    feedback,
+                    patient_id,
+                    image_path
                 FROM analysis_history
                 ORDER BY id DESC
                 LIMIT ?
@@ -125,6 +142,8 @@ class HistoryService:
                     "checkpoint_loaded": bool(row["checkpoint_loaded"]),
                     "probabilities": json.loads(row["probabilities_json"]),
                     "feedback": row["feedback"],
+                    "patient_id": row["patient_id"],
+                    "image_path": row["image_path"],
                 }
             )
         return records
