@@ -146,6 +146,36 @@ export default function AnalyzePage() {
     URL.revokeObjectURL(url);
   };
 
+  const onDownloadCsvReport = () => {
+    if (!prediction) return;
+    const probabilities = prediction.probabilities || {};
+    const probabilityColumns = Object.keys(probabilities).sort();
+    const headers = [
+      "timestamp_utc", "file_name", "patient_id", "threshold", "predicted_label",
+      "confidence", "inference_mode", "model_arch", "checkpoint_loaded",
+      ...probabilityColumns.map((l) => `prob_${l}`),
+      "lung_focus_score", "off_lung_attention_ratio", "explainability_warning",
+    ];
+    const values = [
+      new Date().toISOString(), file?.name || "", patientId || "",
+      String(prediction.threshold ?? ""), String(prediction.predicted_label ?? ""),
+      String(prediction.confidence ?? ""), String(prediction.inference_mode ?? ""),
+      String(prediction.model_arch ?? ""), String(prediction.checkpoint_loaded ?? ""),
+      ...probabilityColumns.map((l) => String(probabilities[l] ?? "")),
+      String(gradcam?.lung_focus_score ?? ""), String(gradcam?.off_lung_attention_ratio ?? ""),
+      String(gradcam?.explainability_warning ?? ""),
+    ];
+    const toCsvCell = (v) => `"${String(v).replaceAll("\"", "\"\"")}"`;
+    const csv = `${headers.map(toCsvCell).join(",")}\n${values.map(toCsvCell).join(",")}\n`;
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `medscanassist-report-${Date.now()}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const hasPreview = Boolean(previewUrl);
   const hasPrediction = Boolean(prediction);
   const sortedProbabilities = prediction
@@ -368,10 +398,15 @@ export default function AnalyzePage() {
           <summary>Export report</summary>
           <section className="disclosure-body">
             <h3>Export</h3>
-            <p className="muted">Export JSON for complete machine-readable audit records.</p>
+            <p className="muted">
+              Export JSON for complete machine-readable audit records, or CSV for spreadsheet-style review.
+            </p>
             <div className="row">
               <button type="button" onClick={onDownloadReport} disabled={!prediction}>
                 Download report (.json)
+              </button>
+              <button type="button" className="ghost" onClick={onDownloadCsvReport} disabled={!prediction}>
+                Download report (.csv)
               </button>
             </div>
           </section>

@@ -111,6 +111,52 @@ body {
   background: #edf4ff;
 }
 
+/* ---- Connection banner ---- */
+
+.connection-banner {
+  margin-top: 1rem;
+  padding: 0.85rem 1rem;
+  border-radius: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.connection-banner p {
+  margin: 0.2rem 0 0;
+  font-size: 0.88rem;
+}
+
+.connection-banner.connecting {
+  background: #eef5ff;
+  border: 1px solid #b8d4f5;
+  color: #1a4b8c;
+}
+
+.connection-banner.unavailable {
+  background: #fff4e5;
+  border: 1px solid #f1d3a8;
+  color: #8a4b08;
+}
+
+.connection-banner.unavailable button {
+  flex-shrink: 0;
+}
+
+.connection-spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid #b8d4f5;
+  border-top-color: #1a6dd4;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .status-bar {
   margin-top: 1rem;
   display: flex;
@@ -134,6 +180,17 @@ body {
 .pill.warn {
   background: var(--warn-bg);
   color: var(--warn-text);
+}
+
+.pill.connecting-pill {
+  background: #eef5ff;
+  color: #1a4b8c;
+  animation: pulse-subtle 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
 
 .pill.neutral {
@@ -390,6 +447,16 @@ button:disabled {
 
 .ghost:hover:not(:disabled) {
   background: #f7f9fc;
+}
+
+.refresh-btn.refreshing {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.last-refreshed {
+  font-size: 0.78rem;
+  color: var(--muted);
 }
 
 .grid {
