@@ -107,6 +107,10 @@ export default function PatientDetailPage() {
   useEffect(() => { refresh(); }, [patientId]);
 
   const onSaveEdit = async () => {
+    if (!editData.first_name?.trim() || !editData.last_name?.trim()) {
+      setError("First and last name are required.");
+      return;
+    }
     setSaving(true);
     try {
       await updatePatient(patientId, editData);
@@ -139,7 +143,15 @@ export default function PatientDetailPage() {
   };
 
   if (loading) return <p className="muted">Loading patient...</p>;
-  if (!patient) return <p className="error">Patient not found.</p>;
+  if (error && !patient) return (
+    <>
+      <div className="patient-detail-nav">
+        <Link to="/patients" className="ghost back-link">&larr; All Patients</Link>
+      </div>
+      <p className="error" role="alert">{error}</p>
+    </>
+  );
+  if (!patient) return <p className="error" role="alert">Patient not found.</p>;
 
   return (
     <>
@@ -147,7 +159,7 @@ export default function PatientDetailPage() {
         <Link to="/patients" className="ghost back-link">&larr; All Patients</Link>
       </div>
 
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error" role="alert">{error}</p>}
 
       <section className="card patient-header-card">
         {!editing ? (
@@ -263,12 +275,14 @@ export default function PatientDetailPage() {
                         type="button"
                         className={`feedback-btn ${a.feedback === "correct" ? "active-correct" : ""}`}
                         title="Mark correct"
+                        aria-label="Mark correct"
                         onClick={() => onFeedback(a.id, a.feedback === "correct" ? "clear" : "correct")}
                       >&#x2713;</button>
                       <button
                         type="button"
                         className={`feedback-btn ${a.feedback === "incorrect" ? "active-incorrect" : ""}`}
                         title="Mark incorrect"
+                        aria-label="Mark incorrect"
                         onClick={() => onFeedback(a.id, a.feedback === "incorrect" ? "clear" : "incorrect")}
                       >&#x2717;</button>
                     </div>

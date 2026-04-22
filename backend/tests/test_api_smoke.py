@@ -14,6 +14,7 @@ os.environ["HISTORY_DB_PATH"] = str(TEST_HISTORY_DB)
 from backend.app.main import app
 from backend.app.config import settings
 from backend.app.services.history_service import history_service
+from backend.app.services.patient_service import patient_service
 
 
 client = TestClient(app)
@@ -27,9 +28,12 @@ def make_test_png_bytes() -> bytes:
 
 
 @pytest.fixture(autouse=True)
-def clear_history_db_between_tests():
-    with history_service._connect() as conn:  # noqa: SLF001 - test-only helper usage.
+def clear_db_between_tests():
+    with history_service._connect() as conn:  # noqa: SLF001
         conn.execute("DELETE FROM analysis_history")
+        conn.commit()
+    with patient_service._connect() as conn:  # noqa: SLF001
+        conn.execute("DELETE FROM patients")
         conn.commit()
     yield
 
@@ -38,9 +42,11 @@ def clear_history_db_between_tests():
 
 def test_health_ok() -> None:
     response = client.get("/health")
-    assert response.status_code == 200
+    assert response.status_code in (200, 503)
     payload = response.json()
-    assert payload["status"] == "ok"
+    assert payload["status"] in ("ok", "degraded")
+    assert "checks" in payload
+    assert payload["checks"]["database"] == "ok"
 
 
 # ─── Predict ───
@@ -266,3 +272,107 @@ def test_drift_with_enough_data() -> None:
     assert isinstance(payload["drift_detected"], bool)
     assert isinstance(payload["bins"], list)
     assert len(payload["bins"]) == 10
+
+
+# ─── Patients CRUD ───
+
+def test_patient_create_and_get() -> None:
+    resp = client.post("/patients", json={
+        "first_name": "John", "last_name": "Doe",
+        "date_of_birth": "1990-01-15", "medical_record_number": "MRN-T001",
+    })
+    assert resp.status_code == 201
+    patient = resp.json()
+    assert patient["first_name"] == "John"
+    assert patient["last_name"] == "Doe"
+    pid = patient["id"]
+
+    detail = client.get(f"/patients/{pid}")
+    assert detail.status_code == 200
+    assert detail.json()["first_name"] == "John"
+
+
+def test_patient_list_and_search() -> None:
+    client.post("/patients", json={"first_name": "Alice", "last_name": "Smith"})
+    client.post("/patients", json={"first_name": "Bob", "last_name": "Jones"})
+    resp = client.get("/patients")
+    assert resp.status_code == 200
+    assert resp.json()["total"] >= 2
+
+    resp = client.get("/patients?search=Alice")
+    assert resp.status_code == 200
+    names = [p["first_name"] for p in resp.json()["patients"]]
+    assert "Alice" in names
+
+
+def test_patient_update() -> None:
+    create = client.post("/patients", json={"first_name": "Ed", "last_name": "Update"})
+    pid = create.json()["id"]
+    resp = client.put(f"/patients/{pid}", json={"first_name": "Edward"})
+    assert resp.status_code == 200
+    assert resp.json()["first_name"] == "Edward"
+
+
+def test_patient_delete() -> None:
+    create = client.post("/patients", json={"first_name": "Del", "last_name": "Ete"})
+    pid = create.json()["id"]
+    resp = client.delete(f"/patients/{pid}")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] is True
+    assert client.get(f"/patients/{pid}").status_code == 404
+
+
+def test_patient_not_found() -> None:
+    assert client.get("/patients/999999").status_code == 404
+
+
+def test_patient_duplicate_mrn_rejected() -> None:
+    client.post("/patients", json={
+        "first_name": "A", "last_name": "B", "medical_record_number": "DUP-001",
+    })
+    resp = client.post("/patients", json={
+        "first_name": "C", "last_name": "D", "medical_record_number": "DUP-001",
+    })
+    assert resp.status_code == 409
+
+
+def test_patient_progression() -> None:
+    create = client.post("/patients", json={"first_name": "Prog", "last_name": "Test"})
+    pid = create.json()["id"]
+    resp = client.get(f"/patients/{pid}/progression")
+    assert resp.status_code == 200
+    assert resp.json()["patient_id"] == pid
+
+
+# ─── Image Serving ───
+
+def test_image_not_found() -> None:
+    resp = client.get("/images/nonexistent.png")
+    assert resp.status_code == 404
+
+
+def test_image_path_traversal_blocked() -> None:
+    resp = client.get("/images/..%2F..%2Fetc%2Fpasswd")
+    assert resp.status_code == 404
+
+
+# ─── Analyze with Invalid Patient ───
+
+def test_analyze_with_invalid_patient_id() -> None:
+    image_bytes = make_test_png_bytes()
+    resp = client.post(
+        "/analyze?patient_id=999999",
+        files={"file": ("sample.png", image_bytes, "image/png")},
+    )
+    assert resp.status_code == 404
+    assert "patient" in resp.json()["detail"].lower()
+
+
+# ─── Corrupted Upload ───
+
+def test_analyze_rejects_corrupted_image() -> None:
+    resp = client.post(
+        "/analyze",
+        files={"file": ("bad.png", b"not-a-real-png", "image/png")},
+    )
+    assert resp.status_code == 400

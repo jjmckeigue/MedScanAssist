@@ -148,7 +148,7 @@ def build_optimizer(model: nn.Module, lr: float) -> optim.Optimizer:
 def build_scheduler(optimizer: optim.Optimizer, args: argparse.Namespace) -> ReduceLROnPlateau:
     return ReduceLROnPlateau(
         optimizer,
-        mode="min",
+        mode="max",
         factor=args.scheduler_factor,
         patience=args.scheduler_patience,
         min_lr=args.scheduler_min_lr,
@@ -567,16 +567,25 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def is_improvement(
-    val_acc: float,
-    best_val_acc: float,
-    val_loss: float,
-    best_val_loss: float,
-    min_delta: float,
-) -> bool:
-    if val_acc > best_val_acc + min_delta:
-        return True
-    return abs(val_acc - best_val_acc) <= min_delta and val_loss < best_val_loss
+def compute_epoch_clinical_metrics(
+    model: nn.Module, loader: DataLoader, positive_index: int
+) -> dict[str, float]:
+    """Compute AUROC, F1, sensitivity, specificity on a validation set."""
+    y_true, y_pred, y_score = collect_test_outputs(model, loader, positive_index)
+
+    unique_classes = np.unique(y_true)
+    if unique_classes.shape[0] < 2:
+        return {"auroc": 0.0, "f1": 0.0, "sensitivity": 0.0, "specificity": 0.0}
+
+    fpr, tpr, _ = roc_curve(y_true, y_score, pos_label=positive_index)
+    auroc = float(auc(fpr, tpr))
+    f1 = float(f1_score(y_true, y_pred, zero_division=0))
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel()
+    sensitivity = float(tp / (tp + fn)) if (tp + fn) else 0.0
+    specificity = float(tn / (tn + fp)) if (tn + fp) else 0.0
+
+    return {"auroc": auroc, "f1": f1, "sensitivity": sensitivity, "specificity": specificity}
 
 
 def collect_test_outputs(
@@ -1023,7 +1032,10 @@ def train_single_split(
     full_unfreeze_epochs = max(0, args.epochs_finetune - last_block_epochs)
     total_epochs = warmup_epochs + args.epochs_head + last_block_epochs + full_unfreeze_epochs
 
+    positive_idx = train_ds.classes.index("PNEUMONIA") if "PNEUMONIA" in train_ds.classes else len(train_ds.classes) - 1
+
     history: list[dict[str, float]] = []
+    best_val_auroc = -1.0
     best_val_acc = -1.0
     best_val_loss = float("inf")
     best_epoch = 0
@@ -1047,15 +1059,19 @@ def train_single_split(
                 pg["lr"] = args.lr_head
             phase = "head"
         elif epoch == warmup_epochs + args.epochs_head + 1 and last_block_epochs > 0:
-            status(f"{prefix}Switching phase: unfreeze last block + head.")
+            status(f"{prefix}Switching phase: unfreeze last block + head (with warmup).")
             unfreeze_last_block_and_head(model, arch)
-            optimizer = build_optimizer(model, args.lr_finetune)
+            optimizer = build_optimizer(model, args.lr_finetune * 0.1)
+            for pg in optimizer.param_groups:
+                pg["lr"] = args.lr_finetune
             scheduler = build_scheduler(optimizer, args)
             phase = "last_block"
         elif epoch == warmup_epochs + args.epochs_head + last_block_epochs + 1 and full_unfreeze_epochs > 0:
-            status(f"{prefix}Switching phase: full-network fine-tuning.")
+            status(f"{prefix}Switching phase: full-network fine-tuning (with warmup).")
             unfreeze_all_layers(model)
-            optimizer = build_optimizer(model, args.lr_finetune)
+            optimizer = build_optimizer(model, args.lr_finetune * 0.1)
+            for pg in optimizer.param_groups:
+                pg["lr"] = args.lr_finetune
             scheduler = build_scheduler(optimizer, args)
             phase = "full_finetune"
         elif epoch > warmup_epochs + args.epochs_head + last_block_epochs:
@@ -1083,8 +1099,14 @@ def train_single_split(
                 heartbeat_label=f"{prefix}Epoch {epoch}/{total_epochs} val",
             )
 
+        clinical = compute_epoch_clinical_metrics(model, val_loader, positive_idx)
+        val_auroc = clinical["auroc"]
+        val_f1 = clinical["f1"]
+        val_sensitivity = clinical["sensitivity"]
+        val_specificity = clinical["specificity"]
+
         if epoch > warmup_epochs:
-            scheduler.step(val_loss)
+            scheduler.step(val_auroc)
         current_lr = float(optimizer.param_groups[0]["lr"])
         history.append(
             {
@@ -1095,23 +1117,28 @@ def train_single_split(
                 "train_acc": train_acc,
                 "val_loss": val_loss,
                 "val_acc": val_acc,
+                "val_auroc": val_auroc,
+                "val_f1": val_f1,
+                "val_sensitivity": val_sensitivity,
+                "val_specificity": val_specificity,
             }
         )
         print(
             f"{prefix}epoch={epoch}/{total_epochs} phase={phase} lr={current_lr:.2e} "
             f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
-            f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
+            f"val_loss={val_loss:.4f} val_acc={val_acc:.4f} "
+            f"val_auroc={val_auroc:.4f} val_f1={val_f1:.4f} "
+            f"val_sens={val_sensitivity:.4f} val_spec={val_specificity:.4f}"
         )
 
-        if is_improvement(
-            val_acc, best_val_acc, val_loss, best_val_loss, args.early_stopping_min_delta
-        ):
+        improved = val_auroc > best_val_auroc + args.early_stopping_min_delta
+        if improved:
+            best_val_auroc = val_auroc
             best_val_acc = val_acc
             best_val_loss = val_loss
             best_epoch = epoch
             early_stop_count = 0
 
-            # Find optimal temperature for calibration
             optimal_temp = find_optimal_temperature(model, val_loader)
 
             torch.save(
@@ -1123,18 +1150,23 @@ def train_single_split(
                     "best_epoch": best_epoch,
                     "best_val_acc": best_val_acc,
                     "best_val_loss": best_val_loss,
+                    "best_val_auroc": best_val_auroc,
+                    "best_val_f1": val_f1,
                     "history": history,
                     "temperature": optimal_temp,
                 },
                 checkpoint_path,
             )
-            print(f"{prefix}New best checkpoint saved at epoch {best_epoch} (temperature={optimal_temp}).")
+            print(
+                f"{prefix}New best checkpoint at epoch {best_epoch} "
+                f"(AUROC={val_auroc:.4f}, temperature={optimal_temp})."
+            )
         else:
             early_stop_count += 1
             if early_stop_count >= args.early_stopping_patience:
                 status(
                     f"{prefix}Early stopping triggered at epoch {epoch} "
-                    f"(best epoch={best_epoch}, val_acc={best_val_acc:.4f})."
+                    f"(best epoch={best_epoch}, val_auroc={best_val_auroc:.4f})."
                 )
                 break
 
@@ -1148,6 +1180,7 @@ def train_single_split(
         "best_epoch": best_epoch,
         "best_val_acc": best_val_acc,
         "best_val_loss": best_val_loss,
+        "best_val_auroc": best_val_auroc,
     }
 
 
@@ -1325,6 +1358,98 @@ def run_kfold(args: argparse.Namespace, arch: str, transforms_map: dict[str, obj
     status(f"K-fold artifacts saved to {kfold_dir}")
 
 
+def generate_test_summary(
+    model: nn.Module,
+    dataset_root: Path,
+    transforms_map: dict[str, object],
+    batch_size: int,
+    checkpoint_meta: dict,
+    out_path: Path,
+) -> None:
+    """Generate a comprehensive test_summary.json with clinical evaluation metrics."""
+    import json as json_mod
+
+    split_path = dataset_root / "test"
+    if not split_path.exists():
+        status("No test split found; skipping test_summary.json.")
+        return
+
+    ds = build_imagefolder_dataset(dataset_root, "test", transforms_map["test"])
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    positive_idx = ds.classes.index("PNEUMONIA") if "PNEUMONIA" in ds.classes else len(ds.classes) - 1
+
+    y_true, y_pred, y_score = collect_test_outputs(model, loader, positive_idx)
+
+    unique_classes = np.unique(y_true)
+    if unique_classes.shape[0] < 2:
+        status("Test set has only one class; cannot compute full metrics.")
+        return
+
+    fpr, tpr, _ = roc_curve(y_true, y_score, pos_label=positive_idx)
+    test_auroc = float(auc(fpr, tpr))
+    test_f1 = float(f1_score(y_true, y_pred, zero_division=0))
+    test_acc = float(accuracy_score(y_true, y_pred))
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel()
+    sensitivity = float(tp / (tp + fn)) if (tp + fn) else 0.0
+    specificity = float(tn / (tn + fp)) if (tn + fp) else 0.0
+    ppv = float(tp / (tp + fp)) if (tp + fp) else 0.0
+    npv = float(tn / (tn + fn)) if (tn + fn) else 0.0
+    pr_auc_val = float(average_precision_score(y_true, y_score, pos_label=positive_idx))
+    brier = float(brier_score_loss(y_true == positive_idx, y_score))
+    youden_j = sensitivity + specificity - 1.0
+
+    n_bootstraps = 1000
+    rng = np.random.RandomState(42)
+    auroc_bootstraps = []
+    for _ in range(n_bootstraps):
+        indices = rng.randint(0, len(y_true), len(y_true))
+        if len(np.unique(y_true[indices])) < 2:
+            continue
+        fpr_b, tpr_b, _ = roc_curve(y_true[indices], y_score[indices], pos_label=positive_idx)
+        auroc_bootstraps.append(float(auc(fpr_b, tpr_b)))
+
+    auroc_ci_lower = float(np.percentile(auroc_bootstraps, 2.5)) if auroc_bootstraps else test_auroc
+    auroc_ci_upper = float(np.percentile(auroc_bootstraps, 97.5)) if auroc_bootstraps else test_auroc
+
+    train_ds = build_imagefolder_dataset(dataset_root, "train", transforms_map["test"])
+    val_path = dataset_root / "val"
+    val_count = len(build_imagefolder_dataset(dataset_root, "val", transforms_map["test"])) if val_path.exists() else 0
+
+    summary = {
+        "model_arch": checkpoint_meta.get("arch", "unknown"),
+        "dataset": "NIH ChestX-ray14",
+        "splits": {
+            "train": len(train_ds),
+            "val": val_count,
+            "test": len(ds),
+        },
+        "patient_level_split": True,
+        "best_epoch": checkpoint_meta.get("best_epoch"),
+        "temperature": checkpoint_meta.get("temperature", 1.0),
+        "test_metrics": {
+            "accuracy": round(test_acc, 4),
+            "auroc": round(test_auroc, 4),
+            "auroc_95ci": [round(auroc_ci_lower, 4), round(auroc_ci_upper, 4)],
+            "f1": round(test_f1, 4),
+            "sensitivity": round(sensitivity, 4),
+            "specificity": round(specificity, 4),
+            "ppv": round(ppv, 4),
+            "npv": round(npv, 4),
+            "pr_auc": round(pr_auc_val, 4),
+            "brier_score": round(brier, 6),
+            "youden_j": round(youden_j, 4),
+        },
+        "confusion_matrix": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
+        "class_names": ds.classes,
+    }
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8") as f:
+        json_mod.dump(summary, f, indent=2)
+    status(f"Test summary saved to {out_path}")
+
+
 def main() -> None:
     status("Starting training script.")
     args = parse_args()
@@ -1377,6 +1502,16 @@ def main() -> None:
         audit_metadata_csv=audit_metadata_csv,
         audit_path_column=args.audit_path_column,
         audit_group_columns=audit_group_columns,
+    )
+
+    status("Generating test_summary.json with clinical metrics.")
+    generate_test_summary(
+        model=best_model,
+        dataset_root=dataset_root,
+        transforms_map=transforms_map,
+        batch_size=args.batch_size,
+        checkpoint_meta=checkpoint,
+        out_path=artifact_dir / "test_summary.json",
     )
 
     if args.external_test_root:

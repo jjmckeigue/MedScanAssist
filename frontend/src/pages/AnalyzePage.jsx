@@ -194,12 +194,15 @@ export default function AnalyzePage() {
 
         <div className="controls">
           <div className="field">
-            <span>Patient (optional)</span>
-            <div className="patient-select-wrap">
+            <label htmlFor="patient-combobox" className="field-label">Patient (optional)</label>
+            <div className="patient-select-wrap" role="combobox" aria-expanded={showPatientDropdown && patientOptions.length > 0 && !patientId} aria-haspopup="listbox" aria-owns="patient-listbox">
               <input
+                id="patient-combobox"
                 className="patient-search-input"
                 type="text"
                 placeholder="Search patients by name or MRN..."
+                aria-autocomplete="list"
+                aria-controls="patient-listbox"
                 value={selectedPatient ? `${selectedPatient.last_name}, ${selectedPatient.first_name}${selectedPatient.medical_record_number ? ` (${selectedPatient.medical_record_number})` : ""}` : patientSearch}
                 onChange={(e) => {
                   setPatientSearch(e.target.value);
@@ -210,14 +213,14 @@ export default function AnalyzePage() {
                 onBlur={() => setTimeout(() => setShowPatientDropdown(false), 200)}
               />
               {patientId && (
-                <button type="button" className="patient-clear-btn" onClick={() => { setPatientId(""); setPatientSearch(""); }}>
+                <button type="button" className="patient-clear-btn" aria-label="Clear patient selection" onClick={() => { setPatientId(""); setPatientSearch(""); }}>
                   &times;
                 </button>
               )}
               {showPatientDropdown && patientOptions.length > 0 && !patientId && (
-                <ul className="patient-dropdown">
+                <ul id="patient-listbox" className="patient-dropdown" role="listbox" aria-label="Patient search results">
                   {patientOptions.map((p) => (
-                    <li key={p.id}>
+                    <li key={p.id} role="option" aria-selected={false}>
                       <button
                         type="button"
                         className="patient-option"
@@ -293,10 +296,10 @@ export default function AnalyzePage() {
         </div>
       </section>
 
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error" role="alert">{error}</p>}
 
       {!hasPreview && !hasPrediction && (
-        <p className="muted inline-note">Results and Grad-CAM appear after you run analysis.</p>
+        <p className="muted inline-note">Results and Eigen-CAM appear after you run analysis.</p>
       )}
 
       {(hasPreview || hasPrediction) && (
@@ -337,9 +340,9 @@ export default function AnalyzePage() {
 
       {hasPreview && (
         <details className="card disclosure">
-          <summary>Grad-CAM view</summary>
+          <summary>Eigen-CAM view</summary>
           <section className="disclosure-body">
-            <h3>Grad-CAM</h3>
+            <h3>Eigen-CAM</h3>
             {gradcam?.gradcam_mode === "synthetic" && (
               <p className="attention-warning">
                 Synthetic heatmap: no trained checkpoint is loaded. This overlay is a center-weighted placeholder and does not reflect real model activations.
@@ -350,7 +353,7 @@ export default function AnalyzePage() {
             )}
             {gradcam && (
               <p className="muted">
-                Mode: {gradcam.gradcam_mode === "real" ? "Real Grad-CAM" : "Synthetic placeholder"}
+                Mode: {gradcam.gradcam_mode === "real" ? "Real Eigen-CAM" : "Synthetic placeholder"}
                 {gradcam.gradcam_mode === "real" && (
                   <> | Lung focus: {(gradcam.lung_focus_score * 100).toFixed(1)}% | Off-lung: {(gradcam.off_lung_attention_ratio * 100).toFixed(1)}%</>
                 )}
@@ -382,7 +385,7 @@ export default function AnalyzePage() {
                         className="preview overlay-top"
                         style={{ opacity: overlayOpacity }}
                         src={`data:image/png;base64,${gradcam.heatmap_base64}`}
-                        alt="Grad-CAM overlay"
+                        alt="Eigen-CAM overlay"
                       />
                     )}
                   </div>

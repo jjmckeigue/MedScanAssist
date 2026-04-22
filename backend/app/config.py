@@ -23,9 +23,10 @@ class Settings(BaseSettings):
     model_arch: str = Field(default="densenet121", alias="MODEL_ARCH")
     class_names: str = Field(default="normal,pneumonia", alias="CLASS_NAMES")
     image_size: int = Field(default=224, alias="IMAGE_SIZE")
-    default_threshold: float = Field(default=0.5, alias="DEFAULT_THRESHOLD")
+    default_threshold: float = Field(default=0.45, alias="DEFAULT_THRESHOLD")
     require_checkpoint: bool = Field(default=False, alias="REQUIRE_CHECKPOINT")
     max_upload_bytes: int = Field(default=8 * 1024 * 1024, alias="MAX_UPLOAD_BYTES")
+    api_key: str = Field(default="", alias="API_KEY")
     cors_origins: str = Field(
         default="http://localhost:5173,http://127.0.0.1:5173",
         alias="CORS_ORIGINS",

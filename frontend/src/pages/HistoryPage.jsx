@@ -5,6 +5,7 @@ export default function HistoryPage() {
   const [historyRecords, setHistoryRecords] = useState([]);
   const [historySummary, setHistorySummary] = useState(null);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
   const refreshHistory = async () => {
     setError("");
@@ -14,6 +15,8 @@ export default function HistoryPage() {
       setHistorySummary(summary);
     } catch (err) {
       setError(err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -28,9 +31,11 @@ export default function HistoryPage() {
     }
   };
 
+  if (loading) return <p className="muted" role="status">Loading history...</p>;
+
   return (
     <>
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error" role="alert">{error}</p>}
 
       <section className="grid metrics-grid">
         <article className="card metric-card">
@@ -80,15 +85,16 @@ export default function HistoryPage() {
         ) : (
           <div className="table-wrap">
             <table className="history-table">
+              <caption className="sr-only">Analysis review history</caption>
               <thead>
                 <tr>
-                  <th>Time (UTC)</th>
-                  <th>File</th>
-                  <th>Prediction</th>
-                  <th>Confidence</th>
-                  <th>Threshold</th>
-                  <th>Mode</th>
-                  <th>Feedback</th>
+                  <th scope="col">Time (UTC)</th>
+                  <th scope="col">File</th>
+                  <th scope="col">Prediction</th>
+                  <th scope="col">Confidence</th>
+                  <th scope="col">Threshold</th>
+                  <th scope="col">Mode</th>
+                  <th scope="col">Feedback</th>
                 </tr>
               </thead>
               <tbody>

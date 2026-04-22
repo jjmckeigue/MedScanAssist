@@ -105,7 +105,9 @@ function App() {
     : null;
 
   return (
-    <main className="page">
+    <>
+    <a href="#main-content" className="skip-link">Skip to main content</a>
+    <main id="main-content" className="page">
       <header className="hero">
         <div className="brand-strip" aria-label="MedScanAssist branding">
           <img
@@ -117,8 +119,42 @@ function App() {
           />
         </div>
         <h1 className="sr-only">MedScanAssist</h1>
-        <p>Upload a chest X-ray, run inference, and inspect Grad-CAM in a transparent workflow.</p>
+        <p>Upload a chest X-ray, run inference, and inspect Eigen-CAM in a transparent workflow.</p>
       </header>
+
+      <aside className="clinical-disclaimer" role="alert">
+        <strong>Clinical Use Notice</strong>
+        <p>
+          MedScanAssist is an AI-assisted screening aid, <em>not</em> a diagnostic tool.
+          All outputs must be independently reviewed by a qualified healthcare professional
+          before any clinical decision is made.
+        </p>
+        <details className="disclaimer-details">
+          <summary>Algorithm &amp; validation details</summary>
+          <div className="disclaimer-body">
+            <p>
+              <strong>Intended use:</strong> Binary pneumonia screening on frontal (PA/AP)
+              adult chest X-ray images (PNG / JPEG). Not validated for pediatric populations.
+            </p>
+            <p>
+              <strong>Algorithm:</strong> DenseNet-121 convolutional neural network fine-tuned
+              on the NIH ChestX-ray14 dataset (112,120 images, 30,805 patients). Patient-level
+              splits prevent data leakage between train/val/test sets.
+            </p>
+            <p>
+              <strong>Validation performance (test set, n=984):</strong> Accuracy 75.4%,
+              Sensitivity 70.0%, Specificity 72.2%, F1 (pneumonia) 0.555.
+              Shortcut reliance index 0.20 (low risk).
+            </p>
+            <p>
+              <strong>Known limitations:</strong> Labels are NLP-extracted from radiology reports
+              (not expert-annotated), binary classification only (pneumonia vs. normal), no
+              multi-label pathology detection, not validated on DICOM inputs or across
+              diverse clinical sites.
+            </p>
+          </div>
+        </details>
+      </aside>
 
       <nav className="tabs" aria-label="Main navigation">
         <NavLink to="/" end className={({ isActive }) => `tab-button ${isActive ? "active" : ""}`}>
@@ -133,8 +169,8 @@ function App() {
       </nav>
 
       {isConnecting && (
-        <div className="connection-banner connecting">
-          <div className="connection-spinner" />
+        <div className="connection-banner connecting" role="status" aria-live="polite">
+          <div className="connection-spinner" aria-hidden="true" />
           <div>
             <strong>Connecting to API service...</strong>
             <p>The backend may take up to 60 seconds to wake up on first load. Please wait.</p>
@@ -143,7 +179,7 @@ function App() {
       )}
 
       {isUnavailable && (
-        <div className="connection-banner unavailable">
+        <div className="connection-banner unavailable" role="alert" aria-live="assertive">
           <div>
             <strong>Unable to reach the API service.</strong>
             <p>The backend may be temporarily down. Check your connection or try again.</p>
@@ -219,6 +255,7 @@ function App() {
         <Route path="/patients/:patientId" element={<PatientDetailPage />} />
       </Routes>
     </main>
+    </>
   );
 }
 

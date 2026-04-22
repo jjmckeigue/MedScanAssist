@@ -30,8 +30,7 @@ dist/
 !.env.example
 
 # Data and model artifacts
-data/raw/
-data/processed/
+data/
 backend/artifacts/
 backend/checkpoints/*
 !backend/checkpoints/best_model.pt
