@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 import json
 import math
@@ -7,6 +8,8 @@ from pathlib import Path
 import sqlite3
 
 from backend.app.config import settings
+
+logger = logging.getLogger("medscanassist.history")
 
 
 class HistoryService:
@@ -38,7 +41,6 @@ class HistoryService:
                 )
                 """
             )
-            # Safe migrations for existing DBs.
             for col_sql in (
                 "ALTER TABLE analysis_history ADD COLUMN feedback TEXT DEFAULT NULL",
                 "ALTER TABLE analysis_history ADD COLUMN patient_id INTEGER DEFAULT NULL",
@@ -46,8 +48,10 @@ class HistoryService:
             ):
                 try:
                     conn.execute(col_sql)
-                except Exception:
+                except sqlite3.OperationalError:
                     pass
+                except Exception:
+                    logger.warning("Migration failed: %s", col_sql, exc_info=True)
             conn.commit()
 
     def add_record(
@@ -129,6 +133,11 @@ class HistoryService:
 
         records = []
         for row in rows:
+            try:
+                probabilities = json.loads(row["probabilities_json"])
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Corrupt probabilities_json for record id=%s", row["id"])
+                probabilities = {}
             records.append(
                 {
                     "id": int(row["id"]),
@@ -140,7 +149,7 @@ class HistoryService:
                     "inference_mode": str(row["inference_mode"]),
                     "model_arch": str(row["model_arch"]),
                     "checkpoint_loaded": bool(row["checkpoint_loaded"]),
-                    "probabilities": json.loads(row["probabilities_json"]),
+                    "probabilities": probabilities,
                     "feedback": row["feedback"],
                     "patient_id": row["patient_id"],
                     "image_path": row["image_path"],

@@ -1,6 +1,8 @@
+import logging
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -14,20 +16,36 @@ from backend.app.routes.patients import router as patients_router
 from backend.app.routes.predict import router as predict_router
 from backend.app.services.model_service import CheckpointRequiredError, model_service
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S%z",
+)
+logger = logging.getLogger("medscanassist")
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    logger.info("Starting MedScanAssist API (env=%s)", settings.app_env)
     try:
         model_service.ensure_ready()
+        logger.info(
+            "Model ready: mode=%s arch=%s checkpoint=%s",
+            model_service.inference_mode,
+            model_service.model_arch,
+            model_service.checkpoint_loaded,
+        )
     except CheckpointRequiredError as exc:
+        logger.critical("Checkpoint required but not found: %s", exc)
         raise RuntimeError(str(exc)) from exc
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     yield
+    logger.info("Shutting down MedScanAssist API")
 
 app = FastAPI(
     title=settings.app_name,
-    description="Chest X-ray pneumonia classification + Grad-CAM explainability API.",
-    version="0.2.0",
+    description="Chest X-ray pneumonia classification + Eigen-CAM explainability API.",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -38,6 +56,40 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+OPEN_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
+
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next) -> Response:
+    api_key = settings.api_key
+    if api_key and request.url.path not in OPEN_PATHS:
+        provided = request.headers.get("X-API-Key", "")
+        if provided != api_key:
+            logger.warning("Unauthorized request: %s %s", request.method, request.url.path)
+            return Response(
+                content='{"detail":"Invalid or missing API key"}',
+                status_code=401,
+                media_type="application/json",
+            )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next) -> Response:
+    start = time.perf_counter()
+    response: Response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    logger.info(
+        "%s %s -> %d (%.1fms)",
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+    )
+    return response
+
 
 app.include_router(health_router)
 app.include_router(model_info_router)

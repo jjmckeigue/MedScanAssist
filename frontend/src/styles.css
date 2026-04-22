@@ -1018,6 +1018,78 @@ button:disabled {
   align-items: center;
 }
 
+/* ---- Skip link ---- */
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: auto;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  z-index: 100;
+  background: var(--primary);
+  color: #fff;
+  padding: 0.6rem 1.2rem;
+  border-radius: 0 0 0.5rem 0;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.skip-link:focus {
+  left: 0;
+  top: 0;
+  width: auto;
+  height: auto;
+}
+
+/* ---- Clinical disclaimer ---- */
+
+.clinical-disclaimer {
+  margin-top: 1rem;
+  padding: 0.85rem 1rem;
+  border-radius: 0.8rem;
+  background: #fef9ed;
+  border: 1px solid #f0d99e;
+  color: #6b4f12;
+  font-size: 0.9rem;
+}
+
+.clinical-disclaimer strong {
+  font-size: 0.95rem;
+  display: block;
+  margin-bottom: 0.3rem;
+}
+
+.clinical-disclaimer > p {
+  margin: 0;
+}
+
+.disclaimer-details {
+  margin-top: 0.5rem;
+}
+
+.disclaimer-details summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #8a6516;
+}
+
+.disclaimer-body {
+  margin-top: 0.4rem;
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+
+.disclaimer-body p {
+  margin: 0.35rem 0;
+}
+
+.field-label {
+  font-weight: 600;
+}
+
 @media (max-width: 900px) {
   .grid {
     grid-template-columns: 1fr;
@@ -1042,5 +1114,291 @@ button:disabled {
 
   .patient-info-row {
     flex-direction: column;
+  }
+}
+
+/* ---- Dark mode ---- */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --border: #334155;
+    --primary: #60a5fa;
+    --primary-hover: #3b82f6;
+    --ok-bg: #064e3b;
+    --ok-text: #6ee7b7;
+    --warn-bg: #451a03;
+    --warn-text: #fbbf24;
+    --neutral-bg: #1e293b;
+    --neutral-text: #cbd5e1;
+    --danger: #f87171;
+    --slider-track: #334155;
+    --slider-fill: #60a5fa;
+    --slider-thumb: #1e293b;
+    --slider-thumb-border: #60a5fa;
+  }
+
+  .tabs {
+    background: #1e293b;
+    border-color: #334155;
+  }
+
+  .tab-button {
+    border-color: #334155;
+    color: #cbd5e1;
+  }
+
+  .tab-button.active {
+    background: #1e3a5f;
+    color: #93c5fd;
+  }
+
+  .tab-button:hover:not(:disabled) {
+    background: #1e3a5f;
+  }
+
+  .connection-banner.connecting {
+    background: #172554;
+    border-color: #1e40af;
+    color: #93c5fd;
+  }
+
+  .connection-banner.unavailable {
+    background: #451a03;
+    border-color: #92400e;
+    color: #fbbf24;
+  }
+
+  .connection-spinner {
+    border-color: #1e40af;
+    border-top-color: #60a5fa;
+  }
+
+  .pill.connecting-pill {
+    background: #172554;
+    color: #93c5fd;
+  }
+
+  .file-upload {
+    background: #1e293b;
+    border-color: #334155;
+  }
+
+  .file-upload:hover {
+    background: #253346;
+    border-color: #475569;
+  }
+
+  .file-upload.selected {
+    background: #1e3a5f;
+    border-color: #1d4ed8;
+  }
+
+  .file-upload-button {
+    background: #334155;
+    border-color: #475569;
+    color: #e2e8f0;
+  }
+
+  .file-upload-button:hover {
+    background: #475569;
+    border-color: #64748b;
+  }
+
+  .disclosure summary {
+    background: #1e293b;
+    color: #cbd5e1;
+  }
+
+  .disclosure[open] summary {
+    border-bottom-color: #334155;
+  }
+
+  .history-table thead th {
+    background: #1e293b;
+    color: #94a3b8;
+  }
+
+  .patient-search-input {
+    background: #1e293b;
+    color: #e2e8f0;
+    border-color: #334155;
+  }
+
+  .patient-search-input:focus {
+    border-color: #60a5fa;
+    box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.15);
+  }
+
+  .patient-dropdown {
+    background: #1e293b;
+    border-color: #334155;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  }
+
+  .patient-option:hover {
+    background: #334155;
+  }
+
+  .patient-form input,
+  .patient-form textarea {
+    background: #1e293b;
+    color: #e2e8f0;
+    border-color: #334155;
+  }
+
+  .patient-form input:focus,
+  .patient-form textarea:focus {
+    border-color: #60a5fa;
+    box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.15);
+  }
+
+  .mode-pill {
+    background: #1e293b;
+    border-color: #334155;
+    color: #cbd5e1;
+  }
+
+  .mode-pill:not(.active):hover:not(:disabled),
+  .mode-pill:not(.active):focus-visible {
+    background: #1e3a5f;
+    color: #93c5fd;
+    border-color: #2563eb;
+  }
+
+  .mode-pill.active,
+  .mode-pill.active:hover:not(:disabled),
+  .mode-pill.active:focus-visible {
+    background: #1e3a5f;
+    color: #93c5fd;
+    border-color: #2563eb;
+  }
+
+  .ghost {
+    border-color: #334155;
+    color: #cbd5e1;
+  }
+
+  .ghost:hover:not(:disabled) {
+    background: #253346;
+  }
+
+  .attention-warning {
+    background: #451a03;
+    border-color: #92400e;
+    color: #fbbf24;
+  }
+
+  .metric-value {
+    color: #93c5fd;
+  }
+
+  .feedback-btn {
+    border-color: #334155;
+    color: #94a3b8;
+  }
+
+  .feedback-btn:hover:not(:disabled) {
+    background: #334155;
+  }
+
+  .feedback-btn.active-correct {
+    background: #064e3b;
+    border-color: #059669;
+    color: #6ee7b7;
+  }
+
+  .feedback-btn.active-incorrect {
+    background: #450a0a;
+    border-color: #b91c1c;
+    color: #fca5a5;
+  }
+
+  .timeline-card {
+    border-color: #334155;
+  }
+
+  .timeline-card-header {
+    background: #1e293b;
+    border-bottom-color: #334155;
+  }
+
+  .timeline-thumb {
+    border-color: #334155;
+  }
+
+  .danger-ghost {
+    color: #f87171;
+    border-color: #7f1d1d;
+  }
+
+  .danger-ghost:hover:not(:disabled) {
+    background: #450a0a;
+  }
+
+  .clinical-disclaimer {
+    background: #451a03;
+    border-color: #92400e;
+    color: #fde68a;
+  }
+
+  .disclaimer-details summary {
+    color: #fbbf24;
+  }
+
+  .meter {
+    background: #334155;
+  }
+
+  .mrn-tag {
+    background: #334155;
+    color: #94a3b8;
+  }
+
+  .preview {
+    border-color: #334155;
+  }
+
+  .analyze-link-btn {
+    background: #2563eb;
+    color: #fff;
+  }
+
+  .analyze-link-btn:hover {
+    background: #1d4ed8;
+  }
+
+  button {
+    background: #2563eb;
+  }
+
+  button:hover:not(:disabled) {
+    background: #1d4ed8;
+  }
+
+  .patient-link {
+    color: #60a5fa;
+  }
+}
+
+/* ---- Reduced motion ---- */
+
+@media (prefers-reduced-motion: reduce) {
+  .connection-spinner {
+    animation: none;
+  }
+
+  .pill.connecting-pill {
+    animation: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
   }
 }

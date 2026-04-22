@@ -92,12 +92,12 @@ class GradCamService:
         warning = None
         if lung_focus < 0.5:
             warning = (
-                "Grad-CAM attention is predominantly outside the expected lung region. "
+                "Eigen-CAM attention is predominantly outside the expected lung region. "
                 "Treat this prediction cautiously and verify with clinical review."
             )
         elif lung_focus < 0.65:
             warning = (
-                "Grad-CAM attention is only partially concentrated in the lung region. "
+                "Eigen-CAM attention is only partially concentrated in the lung region. "
                 "Interpret with caution."
             )
 

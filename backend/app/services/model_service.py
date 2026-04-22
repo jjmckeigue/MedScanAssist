@@ -95,6 +95,8 @@ class ModelService:
         self._class_names = [str(c) for c in self._class_names]
         self._image_size = int(meta.get("image_size", self.default_image_size))
         self._temperature = float(meta.get("temperature", 1.0))
+        if "threshold" in meta:
+            self.threshold = float(meta["threshold"])
         self._checkpoint_loaded = True
         self._checkpoint_meta = {
             "best_epoch": meta.get("best_epoch"),
@@ -172,7 +174,7 @@ class ModelService:
 
     def get_model_info(self) -> dict[str, str | bool | float | int | list[str] | None]:
         self._load_checkpoint_if_available()
-        return {
+        info: dict[str, str | bool | float | int | list[str] | None] = {
             "inference_mode": self.inference_mode,
             "model_arch": self._arch,
             "checkpoint_loaded": self._checkpoint_loaded,
@@ -185,6 +187,12 @@ class ModelService:
             "best_val_loss": self._checkpoint_meta.get("best_val_loss"),
             "temperature": self._checkpoint_meta.get("temperature", 1.0),
         }
+        if not self._checkpoint_loaded:
+            info["placeholder_warning"] = (
+                "No trained model checkpoint is loaded. "
+                "Predictions are placeholder values and must NOT be used for clinical decisions."
+            )
+        return info
 
     def predict(
         self, image_bytes: bytes, threshold: float | None = None, tta: bool = False
@@ -204,7 +212,7 @@ class ModelService:
         predicted_label = positive_label if positive_prob >= decision_threshold else self._class_names[0]
         confidence = max(probability_map.values())
 
-        return {
+        result = {
             "predicted_label": predicted_label,
             "confidence": float(confidence),
             "probabilities": probability_map,
@@ -213,6 +221,12 @@ class ModelService:
             "model_arch": self._arch,
             "checkpoint_loaded": self._checkpoint_loaded,
         }
+        if not self._checkpoint_loaded:
+            result["placeholder_warning"] = (
+                "No trained model checkpoint is loaded. "
+                "Predictions are placeholder values and must NOT be used for clinical decisions."
+            )
+        return result
 
 
 model_service = ModelService()

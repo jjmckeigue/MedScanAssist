@@ -7,6 +7,7 @@ export default function PatientsPage() {
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [formData, setFormData] = useState({
     first_name: "", last_name: "", date_of_birth: "", medical_record_number: "", notes: "",
@@ -22,6 +23,8 @@ export default function PatientsPage() {
       setTotal(data.total || 0);
     } catch (err) {
       setError(err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -65,7 +68,9 @@ export default function PatientsPage() {
         </div>
 
         <div className="patients-toolbar">
+          <label htmlFor="patient-search" className="sr-only">Search patients</label>
           <input
+            id="patient-search"
             className="patient-search-input wide"
             type="text"
             placeholder="Search by name or MRN..."
@@ -129,24 +134,29 @@ export default function PatientsPage() {
         )}
       </section>
 
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error" role="alert">{error}</p>}
 
       <section className="card">
         <div className="history-header">
           <h3>{total} Patient{total !== 1 ? "s" : ""}</h3>
         </div>
-        {patients.length === 0 ? (
+        {loading ? (
+          <p className="muted" role="status">Loading patients...</p>
+        ) : error && patients.length === 0 ? (
+          <p className="error" role="alert">Failed to load patients. Please try again.</p>
+        ) : patients.length === 0 ? (
           <p className="muted">No patients found. Add a patient to get started.</p>
         ) : (
           <div className="table-wrap">
             <table className="history-table">
+              <caption className="sr-only">Patient profiles</caption>
               <thead>
                 <tr>
-                  <th>Name</th>
-                  <th>MRN</th>
-                  <th>Date of Birth</th>
-                  <th>Created</th>
-                  <th></th>
+                  <th scope="col">Name</th>
+                  <th scope="col">MRN</th>
+                  <th scope="col">Date of Birth</th>
+                  <th scope="col">Created</th>
+                  <th scope="col"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>

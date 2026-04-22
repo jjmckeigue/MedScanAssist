@@ -1,3 +1,6 @@
+import logging
+import sqlite3
+
 from fastapi import APIRouter, HTTPException, Query
 
 from backend.app.schemas import (
@@ -12,6 +15,8 @@ from backend.app.schemas import (
 )
 from backend.app.services.patient_service import patient_service
 
+logger = logging.getLogger("medscanassist.patients")
+
 router = APIRouter(prefix="/patients", tags=["patients"])
 
 
@@ -25,13 +30,12 @@ async def create_patient(body: PatientCreate) -> PatientResponse:
             medical_record_number=body.medical_record_number,
             notes=body.notes,
         )
-    except Exception as exc:
-        if "UNIQUE constraint" in str(exc):
-            raise HTTPException(
-                status_code=409,
-                detail="A patient with that medical record number already exists.",
-            ) from exc
-        raise
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="A patient with that medical record number already exists.",
+        ) from exc
+    logger.info("Patient created: id=%d name=%s %s", patient["id"], body.first_name, body.last_name)
     return PatientResponse(**patient)
 
 
@@ -69,13 +73,12 @@ async def update_patient(patient_id: int, body: PatientUpdate) -> PatientRespons
         raise HTTPException(status_code=404, detail="Patient not found.")
     try:
         updated = patient_service.update(patient_id, **body.model_dump(exclude_unset=True))
-    except Exception as exc:
-        if "UNIQUE constraint" in str(exc):
-            raise HTTPException(
-                status_code=409,
-                detail="A patient with that medical record number already exists.",
-            ) from exc
-        raise
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="A patient with that medical record number already exists.",
+        ) from exc
+    logger.info("Patient updated: id=%d", patient_id)
     return PatientResponse(**updated)
 
 
@@ -83,6 +86,7 @@ async def update_patient(patient_id: int, body: PatientUpdate) -> PatientRespons
 async def delete_patient(patient_id: int) -> dict:
     if not patient_service.delete(patient_id):
         raise HTTPException(status_code=404, detail="Patient not found.")
+    logger.info("Patient deleted: id=%d", patient_id)
     return {"deleted": True}
 
 

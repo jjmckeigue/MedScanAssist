@@ -7,16 +7,26 @@ IMAGENET_STD = [0.229, 0.224, 0.225]
 
 
 def build_transforms(image_size: int = 224, augment: bool = True) -> dict[str, transforms.Compose]:
+    """Build train/val/test transforms.
+
+    Training augmentations deliberately vary position, orientation, scale, and
+    intensity so the model cannot memorise alignment or brightness cues.
+    All paths normalise to ImageNet statistics for transfer-learning compatibility.
+    """
     if augment:
         train_tf = transforms.Compose(
             [
-                transforms.RandomResizedCrop(image_size, scale=(0.85, 1.0), ratio=(0.9, 1.1)),
+                transforms.Resize((image_size + 32, image_size + 32)),
+                transforms.RandomResizedCrop(image_size, scale=(0.80, 1.0), ratio=(0.85, 1.15)),
                 transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomRotation(degrees=10),
-                transforms.RandomAffine(degrees=0, translate=(0.05, 0.05), shear=5),
-                transforms.ColorJitter(brightness=0.15, contrast=0.15),
+                transforms.RandomRotation(degrees=15),
+                transforms.RandomAffine(degrees=0, translate=(0.08, 0.08), shear=8),
+                transforms.RandomPerspective(distortion_scale=0.15, p=0.3),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.05),
+                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.5)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+                transforms.RandomErasing(p=0.15, scale=(0.02, 0.08)),
             ]
         )
     else:
