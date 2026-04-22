@@ -1,18 +1,19 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 const REQUEST_TIMEOUT_MS = Number(import.meta.env.VITE_REQUEST_TIMEOUT_MS || 60000);
+const HEALTH_TIMEOUT_MS = Number(import.meta.env.VITE_HEALTH_TIMEOUT_MS || 90000);
 
 async function parseJsonSafely(response) {
   return response.json().catch(() => ({}));
 }
 
-async function fetchWithTimeout(url, options = {}) {
+async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } catch (error) {
     if (error?.name === "AbortError") {
-      throw new Error("Request timed out. Please try again.");
+      throw new Error("Request timed out. The server may still be starting up — please try again.");
     }
     throw new Error("Network request failed. Check API connectivity.");
   } finally {
@@ -45,7 +46,7 @@ async function uploadImage(endpoint, file, query = {}) {
 }
 
 export const healthCheck = async () => {
-  const response = await fetchWithTimeout(`${API_BASE_URL}/health`);
+  const response = await fetchWithTimeout(`${API_BASE_URL}/health`, {}, HEALTH_TIMEOUT_MS);
   if (!response.ok) {
     throw new Error("Health check failed");
   }
@@ -53,7 +54,7 @@ export const healthCheck = async () => {
 };
 
 export const getModelInfo = async () => {
-  const response = await fetchWithTimeout(`${API_BASE_URL}/model-info`);
+  const response = await fetchWithTimeout(`${API_BASE_URL}/model-info`, {}, HEALTH_TIMEOUT_MS);
   if (!response.ok) {
     throw new Error("Model info request failed");
   }
