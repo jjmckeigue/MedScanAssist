@@ -6,8 +6,8 @@ def main() -> None:
     if not checkpoint_path.exists():
         raise FileNotFoundError("Run training first to create a checkpoint.")
 
-    # Placeholder script for future offline Grad-CAM generation.
-    print("Grad-CAM script scaffold is ready. Implement target-layer hooks next.")
+    # Placeholder for offline CAM generation (Eigen-CAM is used at serving time).
+    print("CAM script scaffold is ready. See gradcam_service.py for the Eigen-CAM implementation.")
 
 
 if __name__ == "__main__":

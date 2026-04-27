@@ -41,7 +41,7 @@ class GradCamResponse(BaseModel):
 
 
 class AnalyzeResponse(BaseModel):
-    """Combined prediction + Grad-CAM in a single response (one forward pass)."""
+    """Combined prediction + Eigen-CAM explainability in a single response (one forward pass)."""
 
     predicted_label: str
     confidence: float

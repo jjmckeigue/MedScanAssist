@@ -1,18 +1,30 @@
 # MedScanAssist
 
-MedScanAssist is a capstone project for binary chest X-ray classification
-(`pneumonia` vs `normal`) with explainability via Grad-CAM.
+MedScanAssist is an end-to-end machine learning system for binary chest X-ray
+classification (`pneumonia` vs `normal`). It covers the full ML lifecycle:
+data exploration, model development and comparison, evaluation, deployment via
+a FastAPI inference service, monitoring for prediction drift, and responsible
+AI through CAM-based visual explainability (Eigen-CAM) with heuristic safety
+checks.
 
-This repository is organized for:
-- local script-first iteration in Python
-- API-first serving via FastAPI
-- reproducible CPU baseline deployment with Docker
-- React frontend integration after API baseline is stable
+This repository demonstrates:
+- **Data preparation & EDA**: automated exploratory analysis, class-distribution
+  reporting, image-quality statistics, and documented dataset bias/limitations
+- **Model development & comparison**: transfer learning (DenseNet121, ResNet50)
+  vs. a from-scratch SimpleCNN baseline, with side-by-side metric comparison
+- **Evaluation & validation**: confusion matrix, ROC, PR, calibration, threshold
+  tuning, sensitivity/specificity, shortcut stress testing, and optional
+  subgroup fairness audits
+- **MLOps & deployment**: FastAPI serving, Docker packaging, health checks, API
+  key auth, checkpoint versioning, temperature-scaled calibration, TTA, and
+  PSI-based prediction drift monitoring
+- **Responsible AI**: Eigen-CAM explainability with lung-focus/off-lung attention
+  warnings, clinician feedback loop, and governance-ready audit artifacts
 
 ## Stack
 
-- Backend: Python 3.11, FastAPI, Uvicorn, PyTorch, torchvision
-- Explainability: Grad-CAM utility service
+- Backend: Python 3.11, FastAPI, Uvicorn, PyTorch, torchvision, scikit-learn
+- Explainability: Eigen-CAM (gradient-free, ONNX-compatible class activation mapping)
 - Frontend: React + Vite (Node 18+ recommended; `frontend/.nvmrc` included)
 - Packaging: Docker + Docker Compose
 
@@ -22,23 +34,27 @@ This repository is organized for:
 medscanassist/
   backend/
     app/
-      main.py
-      config.py
-      schemas.py
-      routes/
-      services/
+      main.py              # FastAPI application entry point
+      config.py            # Pydantic settings (env-driven)
+      schemas.py           # Request/response models
+      routes/              # API route handlers
+      services/            # Model inference, Eigen-CAM, history, patients
     training/
-      train.py
-      evaluate.py
-      gradcam.py
-      data_utils.py
+      train.py             # Training loop (transfer learning + SimpleCNN)
+      evaluate.py          # Standalone test-set evaluation
+      eda.py               # Exploratory data analysis script
+      compare_models.py    # Multi-architecture comparison utility
+      data_utils.py        # Transforms, augmentation, dataset loading
+      gradcam.py           # Offline CAM generation scaffold
+    checkpoints/           # Saved model weights (.pt, .onnx)
+    artifacts/             # Training metrics, plots, EDA, comparison tables
     requirements.txt
     Dockerfile
   frontend/
     src/
     package.json
   data/
-    raw/
+    raw/                   # Dataset files (git-ignored)
     processed/
   docker-compose.yml
   .env.example
@@ -104,6 +120,99 @@ Outputs:
 
 - `python -m pip install -r backend/requirements-dev.txt`
 - `python -m pytest backend/tests -q`
+
+## Reproducibility Guide
+
+Step-by-step commands to reproduce every artifact in this repository from a
+clean clone. All commands assume the repo root as the working directory.
+
+### 1. Environment setup
+
+```bash
+# Clone and enter repo
+git clone https://github.com/<your-org>/MedScanAssist.git
+cd MedScanAssist
+
+# Create virtual environment
+python -m venv .venv
+# macOS/Linux: source .venv/bin/activate
+# PowerShell:  .\.venv\Scripts\Activate.ps1
+
+# Copy environment config
+cp .env.example .env          # macOS/Linux
+# Copy-Item .env.example .env  # PowerShell
+
+# Install dependencies
+python -m pip install -r backend/requirements-train.txt
+```
+
+### 2. Dataset
+
+Download the [Chest X-Ray Images (Pneumonia)](https://www.kaggle.com/datasets/paultimothymooney/chest-xray-pneumonia)
+dataset from Kaggle and place it at `data/raw/chest_xray/` with the standard
+`train/`, `val/`, `test/` splits (see Dataset Ingestion section below).
+
+### 3. Exploratory data analysis
+
+```bash
+python -m backend.training.eda
+```
+
+Outputs: `backend/artifacts/eda/` (class distribution, image stats, sample grid, EDA summary).
+
+### 4. Train the baseline CNN (SimpleCNN from scratch)
+
+```bash
+python -m backend.training.train --arch simple_cnn --epochs-head 10 --epochs-finetune 0
+# Save checkpoint with architecture-specific name for comparison:
+# copy backend\checkpoints\best_model.pt backend\checkpoints\best_model_simple_cnn.pt  (PowerShell)
+# cp backend/checkpoints/best_model.pt backend/checkpoints/best_model_simple_cnn.pt     (bash)
+```
+
+### 5. Train the transfer-learning model (DenseNet121)
+
+```bash
+python -m backend.training.train --arch densenet121 --epochs-head 5 --epochs-finetune 5 --warmup-epochs 1 --label-smoothing 0.1
+# Save checkpoint:
+# copy backend\checkpoints\best_model.pt backend\checkpoints\best_model_densenet121.pt  (PowerShell)
+# cp backend/checkpoints/best_model.pt backend/checkpoints/best_model_densenet121.pt     (bash)
+```
+
+### 6. (Optional) Train ResNet50
+
+```bash
+python -m backend.training.train --arch resnet50 --epochs-head 5 --epochs-finetune 5 --warmup-epochs 1 --label-smoothing 0.1
+# copy backend\checkpoints\best_model.pt backend\checkpoints\best_model_resnet50.pt
+```
+
+### 7. Model comparison
+
+```bash
+python -m backend.training.compare_models --include-default
+```
+
+Outputs: `backend/artifacts/model_comparison.csv`, `model_comparison.txt`, `model_comparison.png`.
+
+### 8. Run the inference API
+
+```bash
+python -m pip install -r backend/requirements.txt
+python -m uvicorn backend.app.main:app --reload --port 8000
+# Visit http://localhost:8000/docs for Swagger UI
+```
+
+### 9. Run tests
+
+```bash
+python -m pip install -r backend/requirements-dev.txt
+python -m pytest backend/tests -q
+```
+
+### 10. Docker deployment
+
+```bash
+docker compose up --build backend
+```
 
 ## PowerShell Shortcuts
 
@@ -173,6 +282,32 @@ scores until trained weights are present.
 | `--audit-metadata-csv` | none | CSV with per-image subgroup metadata for fairness audits |
 | `--heartbeat-seconds` | 30 | Seconds between in-epoch progress logs |
 
+## Exploratory Data Analysis
+
+```bash
+python -m backend.training.eda
+```
+
+Produces:
+- `backend/artifacts/eda/class_distribution.csv` and `.png` — per-split class counts
+- `backend/artifacts/eda/image_stats.csv` and `.txt` — width/height/aspect statistics
+- `backend/artifacts/eda/image_dimensions.png` — dimension histograms
+- `backend/artifacts/eda/sample_grid.png` — random sample images per class per split
+- `backend/artifacts/eda/eda_summary.txt` — textual summary including dataset bias and limitations
+
+## Model Comparison
+
+After training multiple architectures, generate a side-by-side comparison:
+
+```bash
+python -m backend.training.compare_models --include-default
+```
+
+Produces:
+- `backend/artifacts/model_comparison.csv` — metric table (accuracy, precision, recall, F1, ROC-AUC, params)
+- `backend/artifacts/model_comparison.txt` — formatted report with trade-off analysis
+- `backend/artifacts/model_comparison.png` — grouped bar chart
+
 ### Architecture comparison example
 
 ```bash
@@ -207,9 +342,10 @@ Outputs: `backend/artifacts/kfold/fold_*/best_model.pt` and `backend/artifacts/k
 - `POST /predict` - predicts class probabilities from an uploaded CXR image
   - optional query: `threshold` (0.0 to 1.0) for decision-threshold override
   - optional query: `tta` (true/false) for test-time augmentation
-- `POST /gradcam` - returns Grad-CAM overlay image (base64 PNG) for uploaded CXR
+- `POST /gradcam` - returns Eigen-CAM overlay image (base64 PNG) for uploaded CXR
+  - uses gradient-free SVD-based class activation mapping (not gradient-dependent Grad-CAM)
   - includes heuristic explainability safety fields: `lung_focus_score`, `off_lung_attention_ratio`, `explainability_warning`
-- `POST /analyze` - combined prediction + Grad-CAM in a single request
+- `POST /analyze` - combined prediction + Eigen-CAM in a single request
   - optional query: `patient_id` to link analysis to a patient profile
   - uploaded X-ray images are persisted to `UPLOAD_DIR` for later review
 
@@ -232,3 +368,13 @@ Outputs: `backend/artifacts/kfold/fold_*/best_model.pt` and `backend/artifacts/k
 ### Image Serving
 
 - `GET /images/{filename}` - serve a stored X-ray image by filename
+
+### Note on explainability method naming
+
+The `/gradcam` endpoint path is retained for backward compatibility, but the
+underlying technique is **Eigen-CAM** — a gradient-free class activation mapping
+method that uses SVD on the last convolutional layer's activation tensor. Unlike
+Grad-CAM (which requires backpropagation through the model), Eigen-CAM is
+compatible with ONNX-exported models and does not require gradient computation.
+All user-facing documentation refers to this technique honestly as "Eigen-CAM"
+or "CAM-based explainability."
