@@ -21,6 +21,23 @@ This repository demonstrates:
 - **Responsible AI**: Eigen-CAM explainability with lung-focus/off-lung attention
   warnings, clinician feedback loop, and governance-ready audit artifacts
 
+### Implemented vs. Planned Capabilities
+
+| Capability | Status |
+|------------|--------|
+| EDA with class distribution, image stats, bias documentation | **Implemented** — `python -m backend.training.eda` |
+| SimpleCNN vs DenseNet121/ResNet50 training and comparison | **Implemented** — `train.py` + `compare_models.py` |
+| Confusion matrix, ROC, PR, calibration, threshold tuning | **Implemented** — generated automatically after training |
+| Shortcut stress testing (corner/center masking) | **Implemented** — generated automatically after training |
+| FastAPI inference with Docker, health checks, API key auth | **Implemented** — `docker compose up --build backend` |
+| Eigen-CAM explainability with lung-focus safety warnings | **Implemented** — `/gradcam` and `/analyze` endpoints |
+| Temperature-scaled calibration and TTA | **Implemented** — stored in checkpoint, applied at inference |
+| PSI-based prediction drift monitoring | **Implemented** — `GET /history/drift` |
+| Clinician feedback loop | **Implemented** — `POST /history/{id}/feedback` |
+| External validation on a second institution's dataset | **Planned** — code supports `--external-test-root` but requires a separate dataset not bundled with this repo |
+| Subgroup fairness audits (sex, age, site) | **Planned** — code supports `--audit-metadata-csv` but the Kaggle v1 dataset does not include demographic metadata |
+| Clinical deployment and regulatory approval | **Conceptual** — discussed in the final report as a governance recommendation, not implemented |
+
 ## Stack
 
 - Backend: Python 3.11, FastAPI, Uvicorn, PyTorch, torchvision, scikit-learn
@@ -130,7 +147,7 @@ clean clone. All commands assume the repo root as the working directory.
 
 ```bash
 # Clone and enter repo
-git clone https://github.com/<your-org>/MedScanAssist.git
+git clone https://github.com/jjmckeigue/MedScanAssist.git
 cd MedScanAssist
 
 # Create virtual environment
