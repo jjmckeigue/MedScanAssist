@@ -104,7 +104,7 @@ def test_predict_rejects_oversized_upload() -> None:
     assert "max allowed size" in response.json()["detail"].lower()
 
 
-# ─── Analyze (combined predict + Grad-CAM) ───
+# ─── Analyze (combined predict + Eigen-CAM) ───
 
 def test_analyze_success() -> None:
     image_bytes = make_test_png_bytes()
@@ -132,7 +132,7 @@ def test_analyze_rejects_non_image() -> None:
     assert response.status_code == 400
 
 
-# ─── Grad-CAM ───
+# ─── Eigen-CAM ───
 
 def test_gradcam_success() -> None:
     image_bytes = make_test_png_bytes()

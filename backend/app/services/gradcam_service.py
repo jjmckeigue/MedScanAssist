@@ -37,7 +37,7 @@ class GradCamService:
         """Compute Eigen-CAM from last-conv activations (no gradients needed).
 
         Uses the first principal component of the activation tensor as the
-        saliency map — a well-established gradient-free alternative to Grad-CAM.
+        saliency map — a well-established gradient-free class activation mapping technique.
         """
         acts = activations[0]  # (C, H_feat, W_feat)
         c, h_f, w_f = acts.shape
