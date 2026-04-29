@@ -68,6 +68,11 @@ def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONRespons
 
 app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 
+
+
+def _is_auth_enforced() -> bool:
+    return settings.app_env.lower() in {"staging", "production"}
+
 OPEN_PATHS = {
     "/health",
     "/docs",
@@ -116,6 +121,9 @@ async def jwt_auth_middleware(request: Request, call_next) -> Response:
     if path in OPEN_PATHS or path.startswith("/docs") or path.startswith("/redoc"):
         return await call_next(request)
 
+    if not _is_auth_enforced():
+        return await call_next(request)
+
     auth_header = request.headers.get("Authorization", "")
 
     if auth_header.startswith("Bearer "):
@@ -158,7 +166,7 @@ async def request_body_size_middleware(request: Request, call_next) -> Response:
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > settings.max_upload_bytes:
         return Response(
-            content='{"detail":"Request body too large."}',
+            content=f'{{"detail":"Request body too large: max allowed size is {settings.max_upload_bytes} bytes."}}',
             status_code=413,
             media_type="application/json",
         )
