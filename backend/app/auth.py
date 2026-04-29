@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import bcrypt
 from fastapi import Depends, HTTPException, status
@@ -23,6 +24,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 def _create_token(data: dict, expires_delta: timedelta) -> str:
     payload = data.copy()
     payload["exp"] = datetime.now(tz=timezone.utc) + expires_delta
+    payload["jti"] = str(uuid4())
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
@@ -45,7 +47,11 @@ def decode_token(token: str) -> dict:
 
     Raises ``JWTError`` on any verification failure.
     """
-    return jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+    payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+    from backend.app.services.user_service import user_service
+    if user_service.is_token_revoked(token):
+        raise JWTError("Token revoked")
+    return payload
 
 
 def _extract_email(token: str, *, expected_type: str = "access") -> str:
