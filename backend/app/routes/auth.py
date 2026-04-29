@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -21,7 +21,9 @@ from backend.app.config import settings
 from backend.app.services.email_service import send_verification_email
 from backend.app.services.user_service import (
     generate_verification_token,
+    normalize_email,
     user_service,
+    validate_email_policy,
     validate_password_strength,
 )
 
@@ -39,10 +41,20 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8)
     full_name: str = Field(min_length=1, max_length=200)
 
+    @field_validator("email")
+    @classmethod
+    def enforce_org_email(cls, value: EmailStr) -> EmailStr:
+        validate_email_policy(str(value))
+        return EmailStr(normalize_email(str(value)))
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+    @field_validator("email")
+    @classmethod
+    def normalize_login_email(cls, value: EmailStr) -> EmailStr:
+        return EmailStr(normalize_email(str(value)))
 
 
 class RefreshRequest(BaseModel):
@@ -51,6 +63,11 @@ class RefreshRequest(BaseModel):
 
 class ResendVerificationRequest(BaseModel):
     email: EmailStr
+
+    @field_validator("email")
+    @classmethod
+    def normalize_resend_email(cls, value: EmailStr) -> EmailStr:
+        return EmailStr(normalize_email(str(value)))
 
 
 class TokenResponse(BaseModel):
@@ -67,6 +84,19 @@ class RegisterResponse(BaseModel):
     message: str
     requires_verification: bool = True
 
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str | None = None
+
+
+class UpdateProfileRequest(BaseModel):
+    full_name: str = Field(min_length=1, max_length=200)
+
+
+class UpdatePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
 
 class UserProfileResponse(BaseModel):
     id: int
@@ -193,10 +223,20 @@ async def login(request: Request, body: LoginRequest) -> TokenResponse:
             detail="Please verify your email before signing in. Check your inbox for a verification link.",
         )
 
-    logger.info("User logged in: %s", body.email)
+    email = normalize_email(str(body.email))
+    access_token = create_access_token(email)
+    refresh_token = create_refresh_token(email)
+    refresh_payload = decode_token(refresh_token)
+    user_service.store_refresh_session(
+        user_id=user["id"],
+        refresh_token=refresh_token,
+        expires_at_utc=datetime.fromtimestamp(refresh_payload["exp"], tz=timezone.utc).isoformat(),
+    )
+
+    logger.info("User logged in: %s", email)
     return TokenResponse(
-        access_token=create_access_token(body.email),
-        refresh_token=create_refresh_token(body.email),
+        access_token=access_token,
+        refresh_token=refresh_token,
     )
 
 
@@ -219,6 +259,12 @@ async def refresh(request: Request, body: RefreshRequest) -> TokenResponse:
             detail="Token is not a refresh token.",
         )
 
+    if not user_service.is_refresh_session_active(body.refresh_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh session is invalid or has been revoked.",
+        )
+
     email: str | None = payload.get("sub")
     if email is None:
         raise HTTPException(
@@ -233,9 +279,19 @@ async def refresh(request: Request, body: RefreshRequest) -> TokenResponse:
             detail="User not found or inactive.",
         )
 
+    user_service.revoke_refresh_session(body.refresh_token)
+    access_token = create_access_token(email)
+    refresh_token = create_refresh_token(email)
+    next_payload = decode_token(refresh_token)
+    user_service.store_refresh_session(
+        user_id=user["id"],
+        refresh_token=refresh_token,
+        expires_at_utc=datetime.fromtimestamp(next_payload["exp"], tz=timezone.utc).isoformat(),
+    )
+
     return TokenResponse(
-        access_token=create_access_token(email),
-        refresh_token=create_refresh_token(email),
+        access_token=access_token,
+        refresh_token=refresh_token,
     )
 
 
@@ -248,3 +304,41 @@ async def me(current_user: dict = Depends(get_current_user)) -> UserProfileRespo
         role=current_user["role"],
         created_at_utc=current_user["created_at_utc"],
     )
+
+
+@router.post("/logout", response_model=MessageResponse)
+async def logout(body: LogoutRequest, current_user: dict = Depends(get_current_user)) -> MessageResponse:
+    if body.refresh_token:
+        user_service.revoke_token(body.refresh_token)
+        user_service.revoke_refresh_session(body.refresh_token)
+    logger.info("User logged out: %s", current_user["email"])
+    return MessageResponse(message="Signed out successfully.")
+
+
+@router.put("/me", response_model=UserProfileResponse)
+async def update_me(body: UpdateProfileRequest, current_user: dict = Depends(get_current_user)) -> UserProfileResponse:
+    updated = user_service.update_profile(current_user["id"], body.full_name)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return UserProfileResponse(
+        id=updated["id"],
+        email=updated["email"],
+        full_name=updated["full_name"],
+        role=updated["role"],
+        created_at_utc=updated["created_at_utc"],
+    )
+
+
+@router.post("/change-password", response_model=MessageResponse)
+async def change_password(body: UpdatePasswordRequest, current_user: dict = Depends(get_current_user)) -> MessageResponse:
+    if not verify_password(body.current_password, current_user["hashed_password"]):
+        raise HTTPException(status_code=401, detail="Current password is incorrect.")
+    validate_password_strength(body.new_password)
+    user_service.update_password(current_user["id"], hash_password(body.new_password))
+    return MessageResponse(message="Password updated successfully.")
+
+
+@router.delete("/me", response_model=MessageResponse)
+async def deactivate_me(current_user: dict = Depends(get_current_user)) -> MessageResponse:
+    user_service.deactivate(current_user["id"])
+    return MessageResponse(message="Account deactivated.")
