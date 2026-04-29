@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import secrets
 import sqlite3
+import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -58,6 +59,15 @@ class UserService:
                 """
             )
             self._migrate_add_verification_columns(conn)
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS revoked_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    revoked_at_utc TEXT NOT NULL
+                )
+                """
+            )
             conn.commit()
 
     def _migrate_add_verification_columns(self, conn: sqlite3.Connection) -> None:
@@ -132,6 +142,13 @@ class UserService:
             conn.commit()
             return cursor.rowcount > 0
 
+
+    def update_profile(self, user_id: int, full_name: str) -> dict | None:
+        with self._connect() as conn:
+            conn.execute("UPDATE users SET full_name = ? WHERE id = ?", (full_name, user_id))
+            conn.commit()
+        return self.get_by_id(user_id)
+
     def update_password(self, user_id: int, new_hashed_password: str) -> bool:
         with self._connect() as conn:
             cursor = conn.execute(
@@ -149,6 +166,23 @@ class UserService:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+
+    def revoke_token(self, token: str) -> None:
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        now = datetime.now(tz=timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO revoked_tokens (token_hash, revoked_at_utc) VALUES (?, ?)",
+                (token_hash, now),
+            )
+            conn.commit()
+
+    def is_token_revoked(self, token: str) -> bool:
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        with self._connect() as conn:
+            row = conn.execute("SELECT token_hash FROM revoked_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
+        return row is not None
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict:
