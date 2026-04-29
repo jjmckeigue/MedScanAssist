@@ -251,3 +251,13 @@ export const resendVerification = async (email) => {
   if (!response.ok) throw new Error(data.detail || "Failed to resend verification");
   return data;
 };
+
+export const logoutUser = async () => {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return;
+  await fetchWithAuth(`${API_BASE_URL}/auth/logout`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+};
