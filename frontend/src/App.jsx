@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, Route, Routes, useLocation } from "react-router-dom";
-import { clearTokens, getCurrentUser, getModelInfo, healthCheck, isAuthenticated } from "./api";
+import { clearTokens, getCurrentUser, getModelInfo, healthCheck, isAuthenticated, logoutUser } from "./api";
 import AnalyzePage from "./pages/AnalyzePage";
 import HistoryPage from "./pages/HistoryPage";
 import LoginPage from "./pages/LoginPage";
@@ -31,10 +31,14 @@ function App() {
       .catch(() => setCurrentUser(null));
   }, []);
 
-  const handleLogout = useCallback(() => {
-    clearTokens();
-    setAuthed(false);
-    setCurrentUser(null);
+  const handleLogout = useCallback(async () => {
+    try {
+      await logoutUser();
+    } finally {
+      clearTokens();
+      setAuthed(false);
+      setCurrentUser(null);
+    }
   }, []);
 
   useEffect(() => {

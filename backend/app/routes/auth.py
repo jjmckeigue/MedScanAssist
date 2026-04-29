@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -39,6 +39,14 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8)
     full_name: str = Field(min_length=1, max_length=200)
 
+    @field_validator("email")
+    @classmethod
+    def enforce_org_email(cls, value: EmailStr) -> EmailStr:
+        blocked = {"mailinator.com", "10minutemail.com", "guerrillamail.com", "tempmail.com"}
+        domain = str(value).split("@")[-1].lower()
+        if domain in blocked:
+            raise ValueError("Disposable email domains are not allowed.")
+        return value
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -67,6 +75,19 @@ class RegisterResponse(BaseModel):
     message: str
     requires_verification: bool = True
 
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str | None = None
+
+
+class UpdateProfileRequest(BaseModel):
+    full_name: str = Field(min_length=1, max_length=200)
+
+
+class UpdatePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
 
 class UserProfileResponse(BaseModel):
     id: int
@@ -248,3 +269,40 @@ async def me(current_user: dict = Depends(get_current_user)) -> UserProfileRespo
         role=current_user["role"],
         created_at_utc=current_user["created_at_utc"],
     )
+
+
+@router.post("/logout", response_model=MessageResponse)
+async def logout(body: LogoutRequest, current_user: dict = Depends(get_current_user)) -> MessageResponse:
+    if body.refresh_token:
+        user_service.revoke_token(body.refresh_token)
+    logger.info("User logged out: %s", current_user["email"])
+    return MessageResponse(message="Signed out successfully.")
+
+
+@router.put("/me", response_model=UserProfileResponse)
+async def update_me(body: UpdateProfileRequest, current_user: dict = Depends(get_current_user)) -> UserProfileResponse:
+    updated = user_service.update_profile(current_user["id"], body.full_name)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return UserProfileResponse(
+        id=updated["id"],
+        email=updated["email"],
+        full_name=updated["full_name"],
+        role=updated["role"],
+        created_at_utc=updated["created_at_utc"],
+    )
+
+
+@router.post("/change-password", response_model=MessageResponse)
+async def change_password(body: UpdatePasswordRequest, current_user: dict = Depends(get_current_user)) -> MessageResponse:
+    if not verify_password(body.current_password, current_user["hashed_password"]):
+        raise HTTPException(status_code=401, detail="Current password is incorrect.")
+    validate_password_strength(body.new_password)
+    user_service.update_password(current_user["id"], hash_password(body.new_password))
+    return MessageResponse(message="Password updated successfully.")
+
+
+@router.delete("/me", response_model=MessageResponse)
+async def deactivate_me(current_user: dict = Depends(get_current_user)) -> MessageResponse:
+    user_service.deactivate(current_user["id"])
+    return MessageResponse(message="Account deactivated.")
