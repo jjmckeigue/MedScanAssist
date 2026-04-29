@@ -90,6 +90,7 @@ class UserService:
                 )
                 """
             )
+
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS refresh_sessions (
