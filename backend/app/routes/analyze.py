@@ -19,7 +19,7 @@ limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
-@limiter.limit("30/minute")
+@limiter.limit("120/minute")
 async def analyze(
     request: Request,
     file: UploadFile = File(...),

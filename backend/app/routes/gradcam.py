@@ -12,7 +12,7 @@ limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/gradcam", response_model=GradCamResponse)
-@limiter.limit("30/minute")
+@limiter.limit("120/minute")
 async def gradcam(request: Request, file: UploadFile = File(...)) -> GradCamResponse:
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Uploaded file must be an image.")
