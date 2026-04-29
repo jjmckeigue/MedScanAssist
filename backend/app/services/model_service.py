@@ -21,7 +21,7 @@ IMAGE_MAGIC_BYTES = {
     b"BM": "bmp",
 }
 
-MIN_IMAGE_DIMENSION = 50
+MIN_IMAGE_DIMENSION = 1
 MAX_IMAGE_DIMENSION = 10000
 
 
@@ -54,10 +54,7 @@ def validate_image_magic_bytes(image_bytes: bytes) -> None:
     for magic, fmt in IMAGE_MAGIC_BYTES.items():
         if image_bytes[: len(magic)] == magic:
             return
-    raise InvalidImageError(
-        "Uploaded file does not match any known image format. "
-        "Supported formats: JPEG, PNG, GIF, WebP, BMP."
-    )
+    raise InvalidImageError("Uploaded file is not a decodable image.")
 
 
 def validate_image_dimensions(image: Image.Image) -> None:

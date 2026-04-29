@@ -12,7 +12,7 @@ limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/predict", response_model=PredictionResponse)
-@limiter.limit("30/minute")
+@limiter.limit("120/minute")
 async def predict(
     request: Request,
     file: UploadFile = File(...),
