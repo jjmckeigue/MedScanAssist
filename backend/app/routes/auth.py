@@ -44,16 +44,17 @@ class RegisterRequest(BaseModel):
 
     @field_validator("email")
     @classmethod
+
     def enforce_org_email(cls, value: EmailStr) -> str:
         validate_email_policy(str(value))
         return normalize_email(str(value))
-
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
     @field_validator("email")
     @classmethod
+
     def normalize_login_email(cls, value: EmailStr) -> str:
         return normalize_email(str(value))
 
@@ -67,6 +68,7 @@ class ResendVerificationRequest(BaseModel):
 
     @field_validator("email")
     @classmethod
+    
     def normalize_resend_email(cls, value: EmailStr) -> str:
         return normalize_email(str(value))
 

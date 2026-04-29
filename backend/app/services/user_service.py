@@ -288,6 +288,37 @@ class UserService:
             conn.execute("UPDATE refresh_sessions SET revoked = 1 WHERE token_hash = ?", (token_hash,))
             conn.commit()
 
+
+    def store_refresh_session(self, user_id: int, refresh_token: str, expires_at_utc: str) -> None:
+        token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        now = datetime.now(tz=timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO refresh_sessions (token_hash, user_id, expires_at_utc, revoked, created_at_utc) VALUES (?, ?, ?, 0, ?)",
+                (token_hash, user_id, expires_at_utc, now),
+            )
+            conn.commit()
+
+    def is_refresh_session_active(self, refresh_token: str) -> bool:
+        token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT expires_at_utc, revoked FROM refresh_sessions WHERE token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+        if row is None or int(row["revoked"]) == 1:
+            return False
+        try:
+            return datetime.now(tz=timezone.utc) <= datetime.fromisoformat(str(row["expires_at_utc"]))
+        except ValueError:
+            return False
+
+    def revoke_refresh_session(self, refresh_token: str) -> None:
+        token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        with self._connect() as conn:
+            conn.execute("UPDATE refresh_sessions SET revoked = 1 WHERE token_hash = ?", (token_hash,))
+            conn.commit()
+
     def revoke_token(self, token: str) -> None:
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
         now = datetime.now(tz=timezone.utc).isoformat()
