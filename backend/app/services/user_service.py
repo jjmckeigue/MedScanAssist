@@ -10,6 +10,28 @@ from pathlib import Path
 from backend.app.config import settings
 
 
+DISPOSABLE_EMAIL_DOMAINS = {
+    "mailinator.com",
+    "10minutemail.com",
+    "guerrillamail.com",
+    "tempmail.com",
+    "trashmail.com",
+    "yopmail.com",
+    "dispostable.com",
+}
+
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def validate_email_policy(email: str) -> None:
+    normalized = normalize_email(email)
+    domain = normalized.split("@")[-1]
+    if domain in DISPOSABLE_EMAIL_DOMAINS:
+        raise ValueError("Disposable email domains are not allowed.")
+
+
 def validate_password_strength(password: str) -> None:
     """Raise ``ValueError`` if *password* does not meet minimum complexity."""
     if len(password) < 8:
@@ -68,6 +90,19 @@ class UserService:
                 )
                 """
             )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS refresh_sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    expires_at_utc TEXT NOT NULL,
+                    revoked INTEGER NOT NULL DEFAULT 0,
+                    created_at_utc TEXT NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                )
+                """
+            )
             conn.commit()
 
     def _migrate_add_verification_columns(self, conn: sqlite3.Connection) -> None:
@@ -100,7 +135,7 @@ class UserService:
                                    verification_token, verification_token_expires)
                 VALUES (?, ?, ?, ?, ?, 0, ?, ?)
                 """,
-                (email, hashed_password, full_name, role, now,
+                (normalize_email(email), hashed_password, full_name, role, now,
                  verification_token, verification_token_expires),
             )
             conn.commit()
@@ -108,7 +143,7 @@ class UserService:
 
     def get_by_email(self, email: str) -> dict | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+            row = conn.execute("SELECT * FROM users WHERE email = ?", (normalize_email(email),)).fetchone()
         return self._row_to_dict(row) if row else None
 
     def get_by_id(self, user_id: int) -> dict | None:
@@ -167,6 +202,37 @@ class UserService:
             conn.commit()
             return cursor.rowcount > 0
 
+
+
+    def store_refresh_session(self, user_id: int, refresh_token: str, expires_at_utc: str) -> None:
+        token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        now = datetime.now(tz=timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO refresh_sessions (token_hash, user_id, expires_at_utc, revoked, created_at_utc) VALUES (?, ?, ?, 0, ?)",
+                (token_hash, user_id, expires_at_utc, now),
+            )
+            conn.commit()
+
+    def is_refresh_session_active(self, refresh_token: str) -> bool:
+        token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT expires_at_utc, revoked FROM refresh_sessions WHERE token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+        if row is None or int(row["revoked"]) == 1:
+            return False
+        try:
+            return datetime.now(tz=timezone.utc) <= datetime.fromisoformat(str(row["expires_at_utc"]))
+        except ValueError:
+            return False
+
+    def revoke_refresh_session(self, refresh_token: str) -> None:
+        token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        with self._connect() as conn:
+            conn.execute("UPDATE refresh_sessions SET revoked = 1 WHERE token_hash = ?", (token_hash,))
+            conn.commit()
 
     def revoke_token(self, token: str) -> None:
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
