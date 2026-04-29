@@ -1,4 +1,6 @@
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from backend.app.config import settings
 from backend.app.schemas import GradCamResponse
@@ -6,10 +8,12 @@ from backend.app.services.gradcam_service import gradcam_service
 from backend.app.services.model_service import InvalidImageError
 
 router = APIRouter(tags=["explainability"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/gradcam", response_model=GradCamResponse)
-async def gradcam(file: UploadFile = File(...)) -> GradCamResponse:
+@limiter.limit("30/minute")
+async def gradcam(request: Request, file: UploadFile = File(...)) -> GradCamResponse:
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Uploaded file must be an image.")
 

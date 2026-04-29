@@ -1,4 +1,6 @@
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from backend.app.config import settings
 from backend.app.schemas import PredictionResponse
@@ -6,10 +8,13 @@ from backend.app.services.history_service import history_service
 from backend.app.services.model_service import InvalidImageError, model_service
 
 router = APIRouter(tags=["inference"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/predict", response_model=PredictionResponse)
+@limiter.limit("30/minute")
 async def predict(
+    request: Request,
     file: UploadFile = File(...),
     threshold: float | None = Query(default=None, ge=0.0, le=1.0),
     tta: bool = Query(default=False, description="Enable test-time augmentation for more robust predictions."),

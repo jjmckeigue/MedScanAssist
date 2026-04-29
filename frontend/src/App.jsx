@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { NavLink, Route, Routes } from "react-router-dom";
-import { getModelInfo, healthCheck } from "./api";
+import { NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { clearTokens, getCurrentUser, getModelInfo, healthCheck, isAuthenticated } from "./api";
 import AnalyzePage from "./pages/AnalyzePage";
 import HistoryPage from "./pages/HistoryPage";
+import LoginPage from "./pages/LoginPage";
 import PatientDetailPage from "./pages/PatientDetailPage";
 import PatientsPage from "./pages/PatientsPage";
+import VerifyPage from "./pages/VerifyPage";
 
 const BRAND_ASSETS = { light: "/branding/logo_light.png" };
 const RETRY_INTERVAL_MS = 5000;
 const MAX_RETRIES = 12;
 
 function App() {
+  const [authed, setAuthed] = useState(isAuthenticated());
+  const [currentUser, setCurrentUser] = useState(null);
+
   const [health, setHealth] = useState(null);
   const [modelInfo, setModelInfo] = useState(null);
   const [connectionState, setConnectionState] = useState("connecting");
@@ -18,6 +23,30 @@ function App() {
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const retryCount = useRef(0);
   const retryTimer = useRef(null);
+
+  const handleLogin = useCallback(() => {
+    setAuthed(true);
+    getCurrentUser()
+      .then(setCurrentUser)
+      .catch(() => setCurrentUser(null));
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    clearTokens();
+    setAuthed(false);
+    setCurrentUser(null);
+  }, []);
+
+  useEffect(() => {
+    if (authed) {
+      getCurrentUser()
+        .then(setCurrentUser)
+        .catch(() => {
+          clearTokens();
+          setAuthed(false);
+        });
+    }
+  }, [authed]);
 
   const attemptConnection = useCallback(async () => {
     try {
@@ -39,6 +68,7 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!authed) return;
     let cancelled = false;
 
     const connect = async () => {
@@ -61,7 +91,7 @@ function App() {
       cancelled = true;
       if (retryTimer.current) clearTimeout(retryTimer.current);
     };
-  }, [attemptConnection]);
+  }, [attemptConnection, authed]);
 
   const onRefreshStatus = async () => {
     setRefreshing(true);
@@ -96,6 +126,17 @@ function App() {
     });
   };
 
+  const location = useLocation();
+
+  // Verify page is always accessible (user clicks link from email)
+  if (location.pathname === "/verify") {
+    return <VerifyPage />;
+  }
+
+  if (!authed) {
+    return <LoginPage onLogin={handleLogin} />;
+  }
+
   const statusOk = health?.status === "ok";
   const isConnecting = connectionState === "connecting";
   const isUnavailable = connectionState === "unavailable";
@@ -121,6 +162,17 @@ function App() {
         <h1 className="sr-only">MedScanAssist</h1>
         <p>Upload a chest X-ray, run inference, and inspect Eigen-CAM in a transparent workflow.</p>
       </header>
+
+      {currentUser && (
+        <div className="user-bar">
+          <span className="user-info">
+            Signed in as <strong>{currentUser.full_name}</strong> ({currentUser.email})
+          </span>
+          <button type="button" className="ghost logout-btn" onClick={handleLogout}>
+            Sign Out
+          </button>
+        </div>
+      )}
 
       <aside className="clinical-disclaimer" role="alert">
         <strong>Clinical Use Notice</strong>

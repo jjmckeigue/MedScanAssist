@@ -1,0 +1,169 @@
+from __future__ import annotations
+
+import re
+import secrets
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from backend.app.config import settings
+
+
+def validate_password_strength(password: str) -> None:
+    """Raise ``ValueError`` if *password* does not meet minimum complexity."""
+    if len(password) < 8:
+        raise ValueError("Password must be at least 8 characters long.")
+    if not re.search(r"[A-Z]", password):
+        raise ValueError("Password must contain at least one uppercase letter.")
+    if not re.search(r"[a-z]", password):
+        raise ValueError("Password must contain at least one lowercase letter.")
+    if not re.search(r"\d", password):
+        raise ValueError("Password must contain at least one digit.")
+
+
+def generate_verification_token() -> str:
+    return secrets.token_urlsafe(48)
+
+
+class UserService:
+    """CRUD operations for user accounts (SQLite)."""
+
+    def __init__(self) -> None:
+        self._db_path = Path(settings.history_db_path)
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+
+    def _init_db(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email       TEXT UNIQUE NOT NULL,
+                    hashed_password TEXT NOT NULL,
+                    full_name   TEXT NOT NULL,
+                    role        TEXT NOT NULL DEFAULT 'clinician',
+                    created_at_utc TEXT NOT NULL,
+                    is_active   INTEGER NOT NULL DEFAULT 1,
+                    is_verified INTEGER NOT NULL DEFAULT 0,
+                    verification_token TEXT,
+                    verification_token_expires TEXT
+                )
+                """
+            )
+            self._migrate_add_verification_columns(conn)
+            conn.commit()
+
+    def _migrate_add_verification_columns(self, conn: sqlite3.Connection) -> None:
+        """Add verification columns to existing tables that lack them."""
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "is_verified" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0")
+        if "verification_token" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN verification_token TEXT")
+        if "verification_token_expires" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN verification_token_expires TEXT")
+
+    # ---- CRUD ----
+
+    def create(
+        self,
+        email: str,
+        hashed_password: str,
+        full_name: str,
+        role: str = "clinician",
+        verification_token: str | None = None,
+        verification_token_expires: str | None = None,
+    ) -> dict:
+        now = datetime.now(tz=timezone.utc).isoformat()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO users (email, hashed_password, full_name, role,
+                                   created_at_utc, is_verified,
+                                   verification_token, verification_token_expires)
+                VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (email, hashed_password, full_name, role, now,
+                 verification_token, verification_token_expires),
+            )
+            conn.commit()
+            return self.get_by_id(cursor.lastrowid)  # type: ignore[arg-type]
+
+    def get_by_email(self, email: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def get_by_id(self, user_id: int) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def get_by_verification_token(self, token: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM users WHERE verification_token = ?", (token,)
+            ).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def mark_verified(self, user_id: int) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE users SET is_verified = 1, verification_token = NULL, "
+                "verification_token_expires = NULL WHERE id = ?",
+                (user_id,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def set_verification_token(self, user_id: int, token: str, expires: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE users SET verification_token = ?, verification_token_expires = ? WHERE id = ?",
+                (token, expires, user_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def update_password(self, user_id: int, new_hashed_password: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE users SET hashed_password = ? WHERE id = ?",
+                (new_hashed_password, user_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def deactivate(self, user_id: int) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE users SET is_active = 0 WHERE id = ?",
+                (user_id,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def _row_to_dict(row: sqlite3.Row) -> dict:
+        return {
+            "id": int(row["id"]),
+            "email": str(row["email"]),
+            "hashed_password": str(row["hashed_password"]),
+            "full_name": str(row["full_name"]),
+            "role": str(row["role"]),
+            "created_at_utc": str(row["created_at_utc"]),
+            "is_active": bool(row["is_active"]),
+            "is_verified": bool(row["is_verified"]),
+            "verification_token": row["verification_token"],
+            "verification_token_expires": row["verification_token_expires"],
+        }
+
+
+user_service = UserService()

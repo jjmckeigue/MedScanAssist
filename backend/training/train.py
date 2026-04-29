@@ -1,5 +1,6 @@
 import argparse
 import csv
+import pickle
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,6 +9,7 @@ import time
 
 import numpy as np
 from sklearn.calibration import calibration_curve
+from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import (
     accuracy_score,
     auc,
@@ -22,12 +24,12 @@ from sklearn.metrics import (
 )
 import torch
 from torch import nn, optim
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from torchvision import models
 
 from backend.app.config import settings
-from backend.training.data_utils import build_imagefolder_dataset, build_transforms, build_tta_transforms
+from backend.training.data_utils import build_imagefolder_dataset, build_transforms, build_tta_transforms, mixup_batch
 
 try:
     import matplotlib
@@ -43,6 +45,49 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.use_deterministic_algorithms(True, warn_only=True)
+
+
+class FocalLoss(nn.Module):
+    """Focal loss for imbalanced classification and better calibration.
+
+    Down-weights easy/well-classified examples so the model focuses on
+    hard, misclassified ones. Reduces overconfident wrong predictions.
+    """
+
+    def __init__(
+        self,
+        gamma: float = 2.0,
+        alpha: torch.Tensor | None = None,
+        label_smoothing: float = 0.0,
+    ) -> None:
+        super().__init__()
+        self.gamma = gamma
+        self.alpha = alpha
+        self.label_smoothing = label_smoothing
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        ce_loss = nn.functional.cross_entropy(
+            logits, targets, weight=self.alpha, reduction="none",
+            label_smoothing=self.label_smoothing,
+        )
+        pt = torch.exp(-ce_loss)
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+        return focal_loss.mean()
+
+
+class SoftTargetCrossEntropy(nn.Module):
+    """Cross-entropy loss that accepts soft (one-hot blended) targets from mixup."""
+
+    def __init__(self, weight: torch.Tensor | None = None) -> None:
+        super().__init__()
+        self.weight = weight
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        log_probs = nn.functional.log_softmax(logits, dim=1)
+        if self.weight is not None:
+            log_probs = log_probs * self.weight.unsqueeze(0)
+        loss = -(targets * log_probs).sum(dim=1).mean()
+        return loss
 
 
 def freeze_all(model: nn.Module) -> None:
@@ -145,7 +190,11 @@ def build_optimizer(model: nn.Module, lr: float) -> optim.Optimizer:
     return optim.Adam(trainable_params, lr=lr)
 
 
-def build_scheduler(optimizer: optim.Optimizer, args: argparse.Namespace) -> ReduceLROnPlateau:
+def build_scheduler(
+    optimizer: optim.Optimizer, args: argparse.Namespace, total_epochs: int = 0
+) -> ReduceLROnPlateau | CosineAnnealingLR:
+    if getattr(args, "cosine_annealing", False) and total_epochs > 0:
+        return CosineAnnealingLR(optimizer, T_max=total_epochs, eta_min=args.scheduler_min_lr)
     return ReduceLROnPlateau(
         optimizer,
         mode="max",
@@ -162,9 +211,13 @@ def run_epoch(
     optimizer: optim.Optimizer | None,
     heartbeat_seconds: float,
     heartbeat_label: str,
+    mixup_alpha: float = 0.0,
+    num_classes: int = 2,
+    mixup_criterion: nn.Module | None = None,
 ) -> tuple[float, float]:
     is_train = optimizer is not None
     model.train(is_train)
+    use_mixup = is_train and mixup_alpha > 0 and mixup_criterion is not None
 
     running_loss = 0.0
     correct = 0
@@ -175,8 +228,15 @@ def run_epoch(
     for batch_idx, (images, labels) in enumerate(loader, start=1):
         if is_train:
             optimizer.zero_grad()
-        logits = model(images)
-        loss = criterion(logits, labels)
+
+        if use_mixup:
+            mixed_images, mixed_labels = mixup_batch(images, labels, mixup_alpha, num_classes)
+            logits = model(mixed_images)
+            loss = mixup_criterion(logits, mixed_labels)
+        else:
+            logits = model(images)
+            loss = criterion(logits, labels)
+
         if is_train:
             loss.backward()
             optimizer.step()
@@ -472,26 +532,26 @@ def save_threshold_tuning_artifacts(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train transfer-learning CXR classifier.")
-    parser.add_argument("--epochs-head", type=int, default=3, help="Epochs with frozen backbone.")
+    parser.add_argument("--epochs-head", type=int, default=5, help="Epochs with frozen backbone.")
     parser.add_argument(
         "--epochs-finetune",
         type=int,
-        default=2,
+        default=10,
         help="Total epochs for gradual fine-tuning after head training.",
     )
     parser.add_argument(
         "--epochs-last-block",
         type=int,
-        default=1,
+        default=3,
         help="Max epochs to train only last block + head before full unfreeze.",
     )
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr-head", type=float, default=1e-3)
     parser.add_argument("--lr-finetune", type=float, default=1e-5)
     parser.add_argument("--scheduler-factor", type=float, default=0.5)
-    parser.add_argument("--scheduler-patience", type=int, default=1)
+    parser.add_argument("--scheduler-patience", type=int, default=2)
     parser.add_argument("--scheduler-min-lr", type=float, default=1e-6)
-    parser.add_argument("--early-stopping-patience", type=int, default=2)
+    parser.add_argument("--early-stopping-patience", type=int, default=4)
     parser.add_argument("--early-stopping-min-delta", type=float, default=0.0)
     parser.add_argument(
         "--heartbeat-seconds",
@@ -557,6 +617,28 @@ def parse_args() -> argparse.Namespace:
         "--disable-augmentation",
         action="store_true",
         help="Disable training augmentation (use plain resize only).",
+    )
+    parser.add_argument(
+        "--focal-loss",
+        action="store_true",
+        help="Use focal loss instead of cross-entropy (better for imbalanced data and calibration).",
+    )
+    parser.add_argument(
+        "--focal-gamma",
+        type=float,
+        default=2.0,
+        help="Focal loss gamma parameter (higher = more focus on hard examples).",
+    )
+    parser.add_argument(
+        "--mixup-alpha",
+        type=float,
+        default=0.0,
+        help="Mixup interpolation alpha (0 = disabled, 0.2 recommended). Improves calibration.",
+    )
+    parser.add_argument(
+        "--cosine-annealing",
+        action="store_true",
+        help="Use cosine annealing LR schedule instead of ReduceLROnPlateau.",
     )
     parser.add_argument(
         "--arch",
@@ -724,6 +806,17 @@ def save_shortcut_stress_test_artifacts(
 def status(message: str) -> None:
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"[{timestamp}] {message}", flush=True)
+
+
+def is_improvement(
+    val_acc: float, best_val_acc: float, val_loss: float, best_val_loss: float, min_delta: float
+) -> bool:
+    """Check if current epoch improved over best, used by k-fold path."""
+    if val_acc > best_val_acc + min_delta:
+        return True
+    if abs(val_acc - best_val_acc) < min_delta and val_loss < best_val_loss:
+        return True
+    return False
 
 
 def build_class_weight_tensor(train_ds) -> torch.Tensor:
@@ -986,6 +1079,39 @@ def find_optimal_temperature(
     return round(best_temp, 3)
 
 
+def fit_isotonic_calibration(
+    model: nn.Module,
+    loader: DataLoader,
+    positive_index: int,
+    temperature: float = 1.0,
+) -> IsotonicRegression:
+    """Fit isotonic regression on validation set for post-hoc probability calibration.
+
+    This makes probability outputs reflect true positive rates so that
+    higher thresholds yield genuinely more confident (not less accurate) predictions.
+    """
+    model.eval()
+    all_scores, all_labels = [], []
+    with torch.no_grad():
+        for images, labels in loader:
+            logits = model(images)
+            scaled = logits / temperature if temperature > 0 else logits
+            probs = torch.softmax(scaled, dim=1)
+            all_scores.extend(probs[:, positive_index].cpu().numpy().tolist())
+            all_labels.extend((labels == positive_index).int().cpu().numpy().tolist())
+
+    iso_reg = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+    iso_reg.fit(np.array(all_scores), np.array(all_labels))
+    return iso_reg
+
+
+def save_calibration_model(iso_reg: IsotonicRegression, out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("wb") as fp:
+        pickle.dump(iso_reg, fp)
+    status(f"Isotonic calibration model saved to {out_path}")
+
+
 def train_single_split(
     args: argparse.Namespace,
     arch: str,
@@ -1011,19 +1137,35 @@ def train_single_split(
     model = build_model(num_classes=len(train_ds.classes), arch=arch).to("cpu")
     status(f"{prefix}Model built ({arch}) on CPU.")
 
-    criterion_kwargs: dict = {}
+    class_weights = None
     if not args.disable_class_weighting:
         class_weights = build_class_weight_tensor(train_ds)
-        criterion_kwargs["weight"] = class_weights
         status(f"{prefix}Using inverse-frequency class weights: {class_weights.tolist()}")
-    if args.label_smoothing > 0:
-        criterion_kwargs["label_smoothing"] = args.label_smoothing
-        status(f"{prefix}Label smoothing: {args.label_smoothing}")
-    criterion = nn.CrossEntropyLoss(**criterion_kwargs)
+
+    if args.focal_loss:
+        criterion = FocalLoss(
+            gamma=args.focal_gamma,
+            alpha=class_weights,
+            label_smoothing=args.label_smoothing,
+        )
+        status(f"{prefix}Using focal loss (gamma={args.focal_gamma})")
+    else:
+        criterion_kwargs: dict = {}
+        if class_weights is not None:
+            criterion_kwargs["weight"] = class_weights
+        if args.label_smoothing > 0:
+            criterion_kwargs["label_smoothing"] = args.label_smoothing
+            status(f"{prefix}Label smoothing: {args.label_smoothing}")
+        criterion = nn.CrossEntropyLoss(**criterion_kwargs)
+
+    mixup_criterion: nn.Module | None = None
+    if args.mixup_alpha > 0:
+        mixup_criterion = SoftTargetCrossEntropy(weight=class_weights)
+        status(f"{prefix}Mixup enabled (alpha={args.mixup_alpha})")
 
     freeze_feature_extractor(model, arch)
     optimizer = build_optimizer(model, args.lr_head)
-    scheduler = build_scheduler(optimizer, args)
+    scheduler = build_scheduler(optimizer, args, total_epochs=total_epochs)
 
     # Warmup schedule: linearly ramp LR from near-zero to lr_head over warmup epochs.
     warmup_epochs = max(0, args.warmup_epochs)
@@ -1064,7 +1206,7 @@ def train_single_split(
             optimizer = build_optimizer(model, args.lr_finetune * 0.1)
             for pg in optimizer.param_groups:
                 pg["lr"] = args.lr_finetune
-            scheduler = build_scheduler(optimizer, args)
+            scheduler = build_scheduler(optimizer, args, total_epochs=last_block_epochs)
             phase = "last_block"
         elif epoch == warmup_epochs + args.epochs_head + last_block_epochs + 1 and full_unfreeze_epochs > 0:
             status(f"{prefix}Switching phase: full-network fine-tuning (with warmup).")
@@ -1072,7 +1214,7 @@ def train_single_split(
             optimizer = build_optimizer(model, args.lr_finetune * 0.1)
             for pg in optimizer.param_groups:
                 pg["lr"] = args.lr_finetune
-            scheduler = build_scheduler(optimizer, args)
+            scheduler = build_scheduler(optimizer, args, total_epochs=full_unfreeze_epochs)
             phase = "full_finetune"
         elif epoch > warmup_epochs + args.epochs_head + last_block_epochs:
             phase = "full_finetune"
@@ -1088,6 +1230,9 @@ def train_single_split(
             optimizer,
             heartbeat_seconds=args.heartbeat_seconds,
             heartbeat_label=f"{prefix}Epoch {epoch}/{total_epochs} train",
+            mixup_alpha=args.mixup_alpha,
+            num_classes=len(train_ds.classes),
+            mixup_criterion=mixup_criterion,
         )
         with torch.no_grad():
             val_loss, val_acc = run_epoch(
@@ -1106,7 +1251,10 @@ def train_single_split(
         val_specificity = clinical["specificity"]
 
         if epoch > warmup_epochs:
-            scheduler.step(val_auroc)
+            if isinstance(scheduler, CosineAnnealingLR):
+                scheduler.step()
+            else:
+                scheduler.step(val_auroc)
         current_lr = float(optimizer.param_groups[0]["lr"])
         history.append(
             {
@@ -1485,6 +1633,24 @@ def main() -> None:
     best_model = build_model(num_classes=len(checkpoint["class_names"]), arch=arch).to("cpu")
     best_model.load_state_dict(checkpoint["state_dict"])
     best_model.eval()
+
+    # Isotonic calibration: fit on validation set to fix threshold-accuracy relationship
+    val_path = dataset_root / "val"
+    if val_path.exists():
+        status("Fitting isotonic calibration model on validation set.")
+        val_ds_cal = build_imagefolder_dataset(dataset_root, "val", transforms_map["val"])
+        val_loader_cal = DataLoader(val_ds_cal, batch_size=args.batch_size, shuffle=False, num_workers=0)
+        positive_idx_cal = (
+            val_ds_cal.classes.index("PNEUMONIA")
+            if "PNEUMONIA" in val_ds_cal.classes
+            else len(val_ds_cal.classes) - 1
+        )
+        temp = float(checkpoint.get("temperature", 1.0))
+        iso_reg = fit_isotonic_calibration(best_model, val_loader_cal, positive_idx_cal, temp)
+        calibration_path = checkpoint_dir / "calibration_model.pkl"
+        save_calibration_model(iso_reg, calibration_path)
+    else:
+        status("No validation split found; skipping isotonic calibration.")
 
     audit_metadata_csv = Path(args.audit_metadata_csv) if args.audit_metadata_csv else None
     audit_group_columns = [col.strip() for col in args.audit_group_columns.split(",") if col.strip()]

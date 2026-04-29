@@ -1,7 +1,9 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from backend.app.config import settings
 from backend.app.schemas import AnalyzeResponse
@@ -13,10 +15,13 @@ from backend.app.services.patient_service import patient_service
 logger = logging.getLogger("medscanassist.analyze")
 
 router = APIRouter(tags=["inference"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
+@limiter.limit("30/minute")
 async def analyze(
+    request: Request,
     file: UploadFile = File(...),
     threshold: float | None = Query(default=None, ge=0.0, le=1.0),
     patient_id: int | None = Query(default=None, description="Link this analysis to a patient profile."),
