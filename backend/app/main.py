@@ -4,10 +4,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from backend.app.config import settings
 from backend.app.routes.analyze import router as analyze_router
+from backend.app.routes.auth import router as auth_router
 from backend.app.routes.gradcam import router as gradcam_router
 from backend.app.routes.health import router as health_router
 from backend.app.routes.history import router as history_router
@@ -22,6 +26,8 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%S%z",
 )
 logger = logging.getLogger("medscanassist")
+
+limiter = Limiter(key_func=get_remote_address)
 
 
 @asynccontextmanager
@@ -45,34 +51,117 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     description="Chest X-ray pneumonia classification + Eigen-CAM explainability API.",
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.state.limiter = limiter
 
 
-OPEN_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
+def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    logger.warning("Rate limit exceeded: %s %s from %s", request.method, request.url.path, get_remote_address(request))
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded. Please try again later."},
+    )
+
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+
+OPEN_PATHS = {
+    "/health",
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+    "/auth/register",
+    "/auth/login",
+    "/auth/refresh",
+    "/auth/verify",
+    "/auth/resend-verification",
+}
 
 
 @app.middleware("http")
-async def api_key_middleware(request: Request, call_next) -> Response:
-    api_key = settings.api_key
-    if api_key and request.url.path not in OPEN_PATHS:
-        provided = request.headers.get("X-API-Key", "")
-        if provided != api_key:
-            logger.warning("Unauthorized request: %s %s", request.method, request.url.path)
+async def security_headers_middleware(request: Request, call_next) -> Response:
+    response: Response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+
+    if settings.app_env != "development":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "img-src 'self' data:; "
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; "
+            "connect-src 'self'"
+        )
+    return response
+
+
+@app.middleware("http")
+async def jwt_auth_middleware(request: Request, call_next) -> Response:
+    """Enforce JWT authentication on all protected paths.
+
+    Falls back to legacy API key check if JWT is not present and API_KEY is configured.
+    """
+    path = request.url.path
+
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    if path in OPEN_PATHS or path.startswith("/docs") or path.startswith("/redoc"):
+        return await call_next(request)
+
+    auth_header = request.headers.get("Authorization", "")
+
+    if auth_header.startswith("Bearer "):
+        from backend.app.auth import decode_token
+        from jose import JWTError
+
+        token = auth_header[7:]
+        try:
+            payload = decode_token(token)
+            if payload.get("type") != "access":
+                return Response(
+                    content='{"detail":"Invalid token type."}',
+                    status_code=401,
+                    media_type="application/json",
+                )
+        except JWTError:
             return Response(
-                content='{"detail":"Invalid or missing API key"}',
+                content='{"detail":"Invalid or expired token."}',
                 status_code=401,
                 media_type="application/json",
             )
+        return await call_next(request)
+
+    api_key = settings.api_key
+    if api_key:
+        provided = request.headers.get("X-API-Key", "")
+        if provided == api_key:
+            return await call_next(request)
+
+    logger.warning("Unauthorized request: %s %s", request.method, request.url.path)
+    return Response(
+        content='{"detail":"Authentication required. Provide a valid Bearer token."}',
+        status_code=401,
+        media_type="application/json",
+    )
+
+
+@app.middleware("http")
+async def request_body_size_middleware(request: Request, call_next) -> Response:
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > settings.max_upload_bytes:
+        return Response(
+            content='{"detail":"Request body too large."}',
+            status_code=413,
+            media_type="application/json",
+        )
     return await call_next(request)
 
 
@@ -91,6 +180,20 @@ async def log_requests(request: Request, call_next) -> Response:
     return response
 
 
+# CORSMiddleware MUST be registered AFTER all @app.middleware("http") decorators.
+# FastAPI's add_middleware uses insert(0, ...), so the last registration becomes
+# the outermost middleware — exactly where CORS needs to be to handle preflight
+# OPTIONS requests before the JWT auth middleware can reject them.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+app.include_router(auth_router)
 app.include_router(health_router)
 app.include_router(model_info_router)
 app.include_router(history_router)

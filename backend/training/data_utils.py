@@ -1,9 +1,41 @@
 from pathlib import Path
 
+import numpy as np
+import torch
 from torchvision import datasets, transforms
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
+
+
+def mixup_batch(
+    images: torch.Tensor,
+    labels: torch.Tensor,
+    alpha: float,
+    num_classes: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply mixup augmentation to a batch.
+
+    Returns mixed images and soft label targets (one-hot blended).
+    """
+    if alpha <= 0:
+        one_hot = torch.zeros(labels.size(0), num_classes, device=labels.device)
+        one_hot.scatter_(1, labels.unsqueeze(1), 1.0)
+        return images, one_hot
+
+    lam = float(np.random.beta(alpha, alpha))
+    batch_size = images.size(0)
+    index = torch.randperm(batch_size, device=images.device)
+
+    mixed_images = lam * images + (1.0 - lam) * images[index]
+
+    one_hot_a = torch.zeros(batch_size, num_classes, device=labels.device)
+    one_hot_a.scatter_(1, labels.unsqueeze(1), 1.0)
+    one_hot_b = torch.zeros(batch_size, num_classes, device=labels.device)
+    one_hot_b.scatter_(1, labels[index].unsqueeze(1), 1.0)
+    mixed_labels = lam * one_hot_a + (1.0 - lam) * one_hot_b
+
+    return mixed_images, mixed_labels
 
 
 def build_transforms(image_size: int = 224, augment: bool = True) -> dict[str, transforms.Compose]:

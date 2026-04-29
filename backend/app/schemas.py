@@ -1,4 +1,16 @@
-from pydantic import BaseModel, Field
+import re
+from datetime import date
+
+from pydantic import BaseModel, Field, field_validator
+
+
+def _strip_html(value: str) -> str:
+    """Remove HTML tags from a string to prevent XSS in stored data."""
+    return re.sub(r"<[^>]+>", "", value).strip()
+
+
+NAME_PATTERN = re.compile(r"^[a-zA-Z\s\-'.]+$")
+MRN_PATTERN = re.compile(r"^[a-zA-Z0-9\-]+$")
 
 
 class HealthResponse(BaseModel):
@@ -15,6 +27,7 @@ class PredictionResponse(BaseModel):
     inference_mode: str = Field(description="`checkpoint` when model weights are loaded, else `placeholder`.")
     model_arch: str = Field(description="Model architecture used by inference service.")
     checkpoint_loaded: bool = Field(description="True when a checkpoint was successfully loaded.")
+    calibrated: bool = Field(default=False, description="True when isotonic calibration was applied to probabilities.")
     analysis_id: int | None = Field(default=None, description="Persistent history record ID.")
 
 
@@ -128,6 +141,43 @@ class PatientCreate(BaseModel):
     medical_record_number: str | None = Field(default=None, max_length=50)
     notes: str = Field(default="", max_length=2000)
 
+    @field_validator("first_name", "last_name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        v = v.strip()
+        if not NAME_PATTERN.match(v):
+            raise ValueError("Name may only contain letters, spaces, hyphens, apostrophes, and periods.")
+        return v
+
+    @field_validator("date_of_birth")
+    @classmethod
+    def validate_dob(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        try:
+            parsed = date.fromisoformat(v)
+        except ValueError as exc:
+            raise ValueError("date_of_birth must be a valid ISO date (YYYY-MM-DD).") from exc
+        if parsed > date.today():
+            raise ValueError("date_of_birth cannot be in the future.")
+        return v
+
+    @field_validator("medical_record_number")
+    @classmethod
+    def validate_mrn(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if v and not MRN_PATTERN.match(v):
+            raise ValueError("Medical record number may only contain letters, digits, and hyphens.")
+        return v
+
+    @field_validator("notes")
+    @classmethod
+    def sanitize_notes(cls, v: str) -> str:
+        return _strip_html(v)
+
 
 class PatientUpdate(BaseModel):
     first_name: str | None = Field(default=None, min_length=1, max_length=100)
@@ -135,6 +185,47 @@ class PatientUpdate(BaseModel):
     date_of_birth: str | None = None
     medical_record_number: str | None = Field(default=None, max_length=50)
     notes: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("first_name", "last_name")
+    @classmethod
+    def validate_name(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not NAME_PATTERN.match(v):
+            raise ValueError("Name may only contain letters, spaces, hyphens, apostrophes, and periods.")
+        return v
+
+    @field_validator("date_of_birth")
+    @classmethod
+    def validate_dob(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        try:
+            parsed = date.fromisoformat(v)
+        except ValueError as exc:
+            raise ValueError("date_of_birth must be a valid ISO date (YYYY-MM-DD).") from exc
+        if parsed > date.today():
+            raise ValueError("date_of_birth cannot be in the future.")
+        return v
+
+    @field_validator("medical_record_number")
+    @classmethod
+    def validate_mrn(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if v and not MRN_PATTERN.match(v):
+            raise ValueError("Medical record number may only contain letters, digits, and hyphens.")
+        return v
+
+    @field_validator("notes")
+    @classmethod
+    def sanitize_notes(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return _strip_html(v)
 
 
 class PatientResponse(BaseModel):

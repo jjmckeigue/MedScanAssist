@@ -110,12 +110,13 @@ class GradCamService:
     def _logits_to_prediction(
         self, logits: np.ndarray, threshold: float
     ) -> tuple[str, float, dict[str, float], str]:
-        """Convert raw logits to prediction fields."""
+        """Convert raw logits to prediction fields (with isotonic calibration if available)."""
         temperature = model_service._temperature  # noqa: SLF001
         scaled = logits / temperature if temperature > 0 else logits
         probs = _softmax(scaled)
         class_names = model_service.class_names
         prob_map = {label: float(probs[i]) for i, label in enumerate(class_names)}
+        prob_map = model_service._apply_calibration(prob_map)  # noqa: SLF001
         positive_label = class_names[-1]
         positive_prob = prob_map[positive_label]
         predicted_label = positive_label if positive_prob >= threshold else class_names[0]

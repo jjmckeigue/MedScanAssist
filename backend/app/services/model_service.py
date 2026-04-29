@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 from io import BytesIO
 from pathlib import Path
 
@@ -11,6 +12,17 @@ from backend.app.config import settings
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+IMAGE_MAGIC_BYTES = {
+    b"\xff\xd8\xff": "jpeg",
+    b"\x89PNG": "png",
+    b"GIF8": "gif",
+    b"RIFF": "webp",
+    b"BM": "bmp",
+}
+
+MIN_IMAGE_DIMENSION = 50
+MAX_IMAGE_DIMENSION = 10000
 
 
 class InvalidImageError(ValueError):
@@ -35,6 +47,42 @@ def _preprocess(image: Image.Image, image_size: int) -> np.ndarray:
     return arr[np.newaxis, ...]  # (1, 3, H, W)
 
 
+def validate_image_magic_bytes(image_bytes: bytes) -> None:
+    """Validate that the image bytes start with a known image format magic header."""
+    if len(image_bytes) < 4:
+        raise InvalidImageError("Uploaded data is too small to be a valid image.")
+    for magic, fmt in IMAGE_MAGIC_BYTES.items():
+        if image_bytes[: len(magic)] == magic:
+            return
+    raise InvalidImageError(
+        "Uploaded file does not match any known image format. "
+        "Supported formats: JPEG, PNG, GIF, WebP, BMP."
+    )
+
+
+def validate_image_dimensions(image: Image.Image) -> None:
+    """Reject images with suspicious dimensions."""
+    w, h = image.size
+    if w < MIN_IMAGE_DIMENSION or h < MIN_IMAGE_DIMENSION:
+        raise InvalidImageError(
+            f"Image dimensions ({w}x{h}) are too small. "
+            f"Minimum is {MIN_IMAGE_DIMENSION}x{MIN_IMAGE_DIMENSION}."
+        )
+    if w > MAX_IMAGE_DIMENSION or h > MAX_IMAGE_DIMENSION:
+        raise InvalidImageError(
+            f"Image dimensions ({w}x{h}) exceed maximum allowed "
+            f"({MAX_IMAGE_DIMENSION}x{MAX_IMAGE_DIMENSION})."
+        )
+
+
+def strip_exif(image: Image.Image) -> Image.Image:
+    """Return a copy of the image with EXIF metadata stripped."""
+    data = list(image.getdata())
+    clean = Image.new(image.mode, image.size)
+    clean.putdata(data)
+    return clean
+
+
 class ModelService:
     """ONNX Runtime inference service with placeholder fallback."""
 
@@ -53,6 +101,8 @@ class ModelService:
         self._session = None
         self._checkpoint_meta: dict[str, float | int | str] = {}
         self._temperature: float = 1.0
+        self._calibration_model = None
+        self._calibrated = False
 
     @property
     def checkpoint_loaded(self) -> bool:
@@ -105,16 +155,30 @@ class ModelService:
             "temperature": self._temperature,
         }
 
+        calibration_path = self._checkpoint_path.parent / "calibration_model.pkl"
+        if calibration_path.exists():
+            try:
+                with calibration_path.open("rb") as fp:
+                    self._calibration_model = pickle.load(fp)  # noqa: S301
+                self._calibrated = True
+            except Exception:
+                self._calibration_model = None
+                self._calibrated = False
+
     def ensure_ready(self) -> None:
         self._load_checkpoint_if_available()
         if settings.require_checkpoint and not self._checkpoint_loaded:
             raise CheckpointRequiredError(f"Checkpoint not found at {self._checkpoint_path}")
 
     def _read_image(self, image_bytes: bytes) -> Image.Image:
+        validate_image_magic_bytes(image_bytes)
         try:
-            return Image.open(BytesIO(image_bytes)).convert("RGB")
+            img = Image.open(BytesIO(image_bytes)).convert("RGB")
         except (UnidentifiedImageError, OSError) as exc:
             raise InvalidImageError("Uploaded file is not a decodable image.") from exc
+        validate_image_dimensions(img)
+        img = strip_exif(img)
+        return img
 
     def read_image(self, image_bytes: bytes) -> Image.Image:
         return self._read_image(image_bytes)
@@ -194,6 +258,24 @@ class ModelService:
             )
         return info
 
+    def _apply_calibration(self, probability_map: dict[str, float]) -> dict[str, float]:
+        """Apply isotonic calibration to the positive-class probability if available."""
+        if self._calibration_model is None:
+            return probability_map
+
+        positive_label = self._class_names[-1]
+        raw_prob = probability_map[positive_label]
+        calibrated_prob = float(
+            self._calibration_model.predict(np.array([raw_prob]))[0]
+        )
+        calibrated_prob = max(0.0, min(1.0, calibrated_prob))
+
+        calibrated_map = dict(probability_map)
+        calibrated_map[positive_label] = calibrated_prob
+        if len(self._class_names) == 2:
+            calibrated_map[self._class_names[0]] = 1.0 - calibrated_prob
+        return calibrated_map
+
     def predict(
         self, image_bytes: bytes, threshold: float | None = None, tta: bool = False
     ) -> dict[str, float | str | bool | dict[str, float]]:
@@ -206,6 +288,8 @@ class ModelService:
         probability_map = {
             label: float(probabilities[idx]) for idx, label in enumerate(self._class_names)
         }
+
+        probability_map = self._apply_calibration(probability_map)
 
         positive_label = self._class_names[-1]
         positive_prob = probability_map[positive_label]
@@ -220,6 +304,7 @@ class ModelService:
             "inference_mode": self.inference_mode,
             "model_arch": self._arch,
             "checkpoint_loaded": self._checkpoint_loaded,
+            "calibrated": self._calibrated,
         }
         if not self._checkpoint_loaded:
             result["placeholder_warning"] = (

@@ -26,6 +26,19 @@ class Settings(BaseSettings):
     default_threshold: float = Field(default=0.45, alias="DEFAULT_THRESHOLD")
     require_checkpoint: bool = Field(default=False, alias="REQUIRE_CHECKPOINT")
     max_upload_bytes: int = Field(default=8 * 1024 * 1024, alias="MAX_UPLOAD_BYTES")
+    jwt_secret_key: str = Field(default="change-me-in-production", alias="JWT_SECRET_KEY")
+    jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
+    access_token_expire_minutes: int = Field(default=30, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
+    refresh_token_expire_days: int = Field(default=7, alias="REFRESH_TOKEN_EXPIRE_DAYS")
+
+    smtp_host: str = Field(default="smtp.gmail.com", alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, alias="SMTP_PORT")
+    smtp_user: str = Field(default="medscanassist@gmail.com", alias="SMTP_USER")
+    smtp_password: str = Field(default="", alias="SMTP_PASSWORD")
+    smtp_from_name: str = Field(default="MedScanAssist", alias="SMTP_FROM_NAME")
+    verification_token_expire_hours: int = Field(default=24, alias="VERIFICATION_TOKEN_EXPIRE_HOURS")
+    frontend_url: str = Field(default="http://localhost:5173", alias="FRONTEND_URL")
+
     api_key: str = Field(default="", alias="API_KEY")
     cors_origins: str = Field(
         default="http://localhost:5173,http://127.0.0.1:5173",

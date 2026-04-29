@@ -52,7 +52,47 @@ class HistoryService:
                     pass
                 except Exception:
                     logger.warning("Migration failed: %s", col_sql, exc_info=True)
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS phi_audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_utc TEXT NOT NULL,
+                    user_email TEXT,
+                    action TEXT NOT NULL,
+                    resource_type TEXT NOT NULL,
+                    resource_id TEXT,
+                    details TEXT,
+                    ip_address TEXT
+                )
+                """
+            )
             conn.commit()
+
+    def log_phi_access(
+        self,
+        action: str,
+        resource_type: str,
+        resource_id: str | None = None,
+        user_email: str | None = None,
+        details: str | None = None,
+        ip_address: str | None = None,
+    ) -> None:
+        """Record a PHI access event for HIPAA audit trail."""
+        now = datetime.now(tz=timezone.utc).isoformat()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO phi_audit_log
+                        (timestamp_utc, user_email, action, resource_type, resource_id, details, ip_address)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (now, user_email, action, resource_type, resource_id, details, ip_address),
+                )
+                conn.commit()
+        except Exception:
+            logger.warning("Failed to write PHI audit log entry", exc_info=True)
 
     def add_record(
         self,
