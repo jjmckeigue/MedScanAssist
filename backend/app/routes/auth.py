@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -43,9 +44,9 @@ class RegisterRequest(BaseModel):
 
     @field_validator("email")
     @classmethod
-    def enforce_org_email(cls, value: EmailStr) -> EmailStr:
+    def enforce_org_email(cls, value: EmailStr) -> str:
         validate_email_policy(str(value))
-        return EmailStr(normalize_email(str(value)))
+        return normalize_email(str(value))
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -53,8 +54,8 @@ class LoginRequest(BaseModel):
 
     @field_validator("email")
     @classmethod
-    def normalize_login_email(cls, value: EmailStr) -> EmailStr:
-        return EmailStr(normalize_email(str(value)))
+    def normalize_login_email(cls, value: EmailStr) -> str:
+        return normalize_email(str(value))
 
 
 class RefreshRequest(BaseModel):
@@ -66,8 +67,8 @@ class ResendVerificationRequest(BaseModel):
 
     @field_validator("email")
     @classmethod
-    def normalize_resend_email(cls, value: EmailStr) -> EmailStr:
-        return EmailStr(normalize_email(str(value)))
+    def normalize_resend_email(cls, value: EmailStr) -> str:
+        return normalize_email(str(value))
 
 
 class TokenResponse(BaseModel):
@@ -104,6 +105,12 @@ class UserProfileResponse(BaseModel):
     full_name: str
     role: str
     created_at_utc: str
+
+
+class SessionInfoResponse(BaseModel):
+    created_at_utc: str
+    expires_at_utc: str
+    is_current: bool
 
 
 # ---- Helpers ----
@@ -306,6 +313,36 @@ async def me(current_user: dict = Depends(get_current_user)) -> UserProfileRespo
     )
 
 
+@router.get("/sessions", response_model=list[SessionInfoResponse])
+async def list_sessions(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+) -> list[SessionInfoResponse]:
+    """Active refresh-token sessions. Send ``X-Refresh-Token`` to mark the current session."""
+
+    refresh_header = request.headers.get("X-Refresh-Token") or ""
+    current_hash: str | None = None
+    if refresh_header:
+        current_hash = hashlib.sha256(refresh_header.encode("utf-8")).hexdigest()
+
+    rows = user_service.list_active_refresh_sessions(current_user["id"])
+    return [
+        SessionInfoResponse(
+            created_at_utc=r["created_at_utc"],
+            expires_at_utc=r["expires_at_utc"],
+            is_current=current_hash is not None and r["token_hash"] == current_hash,
+        )
+        for r in rows
+    ]
+
+
+@router.post("/logout-all", response_model=MessageResponse)
+async def logout_all_sessions(current_user: dict = Depends(get_current_user)) -> MessageResponse:
+    n = user_service.revoke_all_refresh_sessions_for_user(current_user["id"])
+    logger.info("All refresh sessions revoked: user_id=%s count=%s", current_user["id"], n)
+    return MessageResponse(message=f"Signed out from {n} active session(s).")
+
+
 @router.post("/logout", response_model=MessageResponse)
 async def logout(body: LogoutRequest, current_user: dict = Depends(get_current_user)) -> MessageResponse:
     if body.refresh_token:
@@ -340,5 +377,11 @@ async def change_password(body: UpdatePasswordRequest, current_user: dict = Depe
 
 @router.delete("/me", response_model=MessageResponse)
 async def deactivate_me(current_user: dict = Depends(get_current_user)) -> MessageResponse:
-    user_service.deactivate(current_user["id"])
-    return MessageResponse(message="Account deactivated.")
+    user_service.deactivate_release_email(current_user["id"])
+    logger.info("Account deactivated (email released): user_id=%s", current_user["id"])
+    return MessageResponse(
+        message=(
+            "Account deactivated. You can register again with the same email; "
+            "you will need to complete email verification."
+        )
+    )

@@ -4,8 +4,10 @@
   --text: #0f172a;
   --muted: #475569;
   --border: #dce5f0;
-  --primary: #1249b2;
-  --primary-hover: #0e3f99;
+  --primary: #4f8ee8;
+  --primary-hover: #3a78d4;
+  --btn-solid: #c96363;
+  --btn-solid-hover: #9f4545;
   --ok-bg: #e7f7ef;
   --ok-text: #0f6d3a;
   --warn-bg: #fff4e5;
@@ -16,7 +18,7 @@
   --slider-track: #dbe7f5;
   --slider-fill: #2f6fdb;
   --slider-thumb: #ffffff;
-  --slider-thumb-border: #1249b2;
+  --slider-thumb-border: #4f8ee8;
 }
 
 * {
@@ -323,7 +325,7 @@ body {
 }
 
 .file-input-hidden:focus-visible ~ .file-upload-button {
-  box-shadow: 0 0 0 4px rgba(18, 73, 178, 0.2);
+  box-shadow: 0 0 0 4px rgba(79, 142, 232, 0.22);
 }
 
 .threshold-slider {
@@ -343,7 +345,7 @@ body {
 }
 
 .threshold-slider:focus-visible {
-  box-shadow: 0 0 0 4px rgba(18, 73, 178, 0.2);
+  box-shadow: 0 0 0 4px rgba(79, 142, 232, 0.22);
 }
 
 .threshold-slider::-webkit-slider-runnable-track {
@@ -447,6 +449,7 @@ button:disabled {
 
 .ghost:hover:not(:disabled) {
   background: #f7f9fc;
+  color: var(--neutral-text);
 }
 
 .refresh-btn.refreshing {
@@ -935,15 +938,32 @@ button:disabled {
 
 .analyze-link-btn:hover {
   background: var(--primary-hover);
+  color: #fff;
 }
 
-.danger-ghost {
+.btn-account-exit {
+  background: var(--btn-solid);
+  color: #fff;
+  border: 1px solid var(--btn-solid);
+}
+
+.btn-account-exit:hover:not(:disabled) {
+  background: var(--btn-solid-hover);
+  border-color: var(--btn-solid-hover);
+  color: #fff;
+}
+
+.danger-ghost,
+button.ghost.danger-ghost {
+  background: transparent;
   color: var(--danger);
-  border-color: #f3b8b3;
+  border: 1px solid #f3b8b3;
 }
 
-.danger-ghost:hover:not(:disabled) {
+.danger-ghost:hover:not(:disabled),
+button.ghost.danger-ghost:hover:not(:disabled) {
   background: #fde8e6;
+  color: var(--danger);
 }
 
 /* ---- Progression chart ---- */
@@ -1041,6 +1061,7 @@ button:disabled {
   top: 0;
   width: auto;
   height: auto;
+  background: var(--primary-hover);
 }
 
 /* ---- Clinical disclaimer ---- */
@@ -1199,7 +1220,7 @@ button:disabled {
 .login-form input:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(18, 73, 178, 0.12);
+  box-shadow: 0 0 0 3px rgba(79, 142, 232, 0.2);
 }
 
 .login-form button[type="submit"] {
@@ -1226,34 +1247,6 @@ button:disabled {
 .link-btn:hover {
   color: var(--primary);
   opacity: 0.75;
-}
-
-/* ---- User bar ---- */
-
-.user-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 0.5rem 1rem;
-  margin-bottom: 0.75rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 0.85rem;
-}
-
-.user-info {
-  color: var(--muted);
-}
-
-.user-info strong {
-  color: var(--text);
-}
-
-.logout-btn {
-  font-size: 0.8rem;
-  padding: 0.25rem 0.75rem;
 }
 
 /* ---- Verification page ---- */
@@ -1318,16 +1311,197 @@ button:disabled {
   border-radius: 8px;
   font-size: 0.95rem;
   font-weight: 600;
-  transition: opacity 0.15s;
+  transition: background 0.15s ease, opacity 0.15s;
 }
 
 .verify-signin-link:hover {
-  opacity: 0.85;
+  background: var(--primary-hover);
+  color: #fff;
+  opacity: 1;
+}
+
+/* ---- Account settings ---- */
+
+.settings-page {
+  margin-top: 0.5rem;
+}
+
+.settings-title {
+  margin: 0 0 0.35rem;
+  font-size: 1.35rem;
+}
+
+.settings-lead {
+  margin: 0 0 1rem;
+}
+
+.settings-stack {
+  display: grid;
+  gap: 1rem 1.25rem;
+  align-items: stretch;
+  grid-template-columns: 1fr;
+}
+
+.settings-stack > .card.settings-section {
+  margin-top: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-section > .settings-form {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.settings-section > .settings-form button[type="submit"] {
+  margin-top: auto;
+  align-self: flex-start;
+}
+
+.settings-section > .btn-account-exit {
+  margin-top: auto;
+  align-self: flex-start;
+}
+
+.settings-section-fill {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-section .session-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 280px;
+  overflow-y: auto;
+  margin-top: 0.5rem;
+}
+
+.settings-section .settings-actions {
+  margin-top: auto;
+  flex-shrink: 0;
+}
+
+@media (min-width: 700px) {
+  .settings-stack {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.settings-section-span-full {
+  grid-column: 1 / -1;
+}
+
+.settings-section h3 {
+  margin: 0 0 0.65rem;
+  font-size: 1.05rem;
+}
+
+.session-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+}
+
+.session-item {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 0.5rem;
+  background: var(--surface);
+}
+
+.session-item.current {
+  border-color: var(--primary);
+  background: #f0f6ff;
+}
+
+.settings-danger-zone {
+  border-color: #f1cfcf;
+}
+
+.settings-danger-zone h3 {
+  color: var(--neutral-text);
+}
+
+.session-meta {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin-top: 0.35rem;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+  align-items: center;
+}
+
+/* ---- Confirm modal ---- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(2px);
+}
+
+.modal-panel {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface);
+  border-radius: 0.9rem;
+  padding: 1.35rem 1.4rem;
+  border: 1px solid var(--border);
+  box-shadow:
+    0 20px 50px rgba(15, 23, 42, 0.16),
+    0 8px 20px rgba(0, 0, 0, 0.06);
+}
+
+.modal-title {
+  margin: 0 0 0.65rem;
+  font-size: 1.2rem;
+  color: var(--text);
+}
+
+.modal-body {
+  margin: 0 0 1rem;
+}
+
+.modal-body p.modal-text {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.modal-error {
+  margin: -0.35rem 0 0.85rem;
+}
+
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
 }
 
 /* ---- Reduced motion ---- */
 
 @media (prefers-reduced-motion: reduce) {
+  .modal-backdrop {
+    backdrop-filter: none;
+  }
+
   .connection-spinner {
     animation: none;
   }

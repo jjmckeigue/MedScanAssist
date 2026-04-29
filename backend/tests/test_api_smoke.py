@@ -10,6 +10,9 @@ TEST_HISTORY_DB = Path("./backend/artifacts/test_history.db")
 if TEST_HISTORY_DB.exists():
     TEST_HISTORY_DB.unlink()
 os.environ["HISTORY_DB_PATH"] = str(TEST_HISTORY_DB)
+# Smoke tests call predict/history without JWT; keep development + open API for this file.
+os.environ["APP_ENV"] = "development"
+os.environ["REQUIRE_AUTH"] = "false"
 
 from backend.app.main import app
 from backend.app.config import settings

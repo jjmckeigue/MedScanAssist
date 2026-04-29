@@ -39,6 +39,15 @@ class Settings(BaseSettings):
     verification_token_expire_hours: int = Field(default=24, alias="VERIFICATION_TOKEN_EXPIRE_HOURS")
     frontend_url: str = Field(default="http://localhost:5173", alias="FRONTEND_URL")
 
+    require_auth: bool = Field(
+        default=False,
+        alias="REQUIRE_AUTH",
+        description=(
+            "When True in development, JWT (or X-API-Key) is required on protected routes. "
+            "staging and production always enforce authentication."
+        ),
+    )
+
     api_key: str = Field(default="", alias="API_KEY")
     cors_origins: str = Field(
         default="http://localhost:5173,http://127.0.0.1:5173",

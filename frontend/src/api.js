@@ -261,3 +261,65 @@ export const logoutUser = async () => {
     body: JSON.stringify({ refresh_token: refreshToken }),
   });
 };
+
+export const updateProfile = async (fullName) => {
+  const response = await fetchWithAuth(`${API_BASE_URL}/auth/me`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ full_name: fullName }),
+  });
+  if (!response.ok) {
+    const payload = await parseJsonSafely(response);
+    throw new Error(payload.detail || "Could not update profile");
+  }
+  return parseJsonSafely(response);
+};
+
+export const changePassword = async (currentPassword, newPassword) => {
+  const response = await fetchWithAuth(`${API_BASE_URL}/auth/change-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+  if (!response.ok) {
+    const payload = await parseJsonSafely(response);
+    const msg = typeof payload.detail === "string" ? payload.detail : "Password change failed";
+    throw new Error(msg);
+  }
+  return parseJsonSafely(response);
+};
+
+export const getSessions = async () => {
+  const headers = { ...authHeaders() };
+  const refreshToken = getRefreshToken();
+  if (refreshToken) headers["X-Refresh-Token"] = refreshToken;
+
+  const response = await fetchWithAuth(`${API_BASE_URL}/auth/sessions`, { headers });
+  if (!response.ok) {
+    const payload = await parseJsonSafely(response);
+    throw new Error(payload.detail || "Could not load sessions");
+  }
+  return parseJsonSafely(response);
+};
+
+export const logoutAllSessions = async () => {
+  const response = await fetchWithAuth(`${API_BASE_URL}/auth/logout-all`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const payload = await parseJsonSafely(response);
+    throw new Error(payload.detail || "Could not sign out all sessions");
+  }
+  return parseJsonSafely(response);
+};
+
+export const deactivateAccount = async () => {
+  const response = await fetchWithAuth(`${API_BASE_URL}/auth/me`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    const payload = await parseJsonSafely(response);
+    throw new Error(payload.detail || "Could not deactivate account");
+  }
+  return parseJsonSafely(response);
+};
