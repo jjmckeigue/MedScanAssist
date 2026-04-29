@@ -4,6 +4,8 @@ import re
 import secrets
 import sqlite3
 import hashlib
+
+import bcrypt
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -193,15 +195,98 @@ class UserService:
             conn.commit()
             return cursor.rowcount > 0
 
-    def deactivate(self, user_id: int) -> bool:
+    def deactivate_release_email(self, user_id: int) -> bool:
+        """Deactivate user, revoke sessions, scramble password, and free the email for re-registration."""
+        placeholder = f"deactivated.{secrets.token_hex(16)}@inactive.local"
+        junk_hash = bcrypt.hashpw(secrets.token_urlsafe(24).encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
         with self._connect() as conn:
+            conn.execute("UPDATE refresh_sessions SET revoked = 1 WHERE user_id = ?", (user_id,))
             cursor = conn.execute(
-                "UPDATE users SET is_active = 0 WHERE id = ?",
-                (user_id,),
+                """
+                UPDATE users SET
+                    email = ?,
+                    hashed_password = ?,
+                    is_active = 0,
+                    is_verified = 0,
+                    verification_token = NULL,
+                    verification_token_expires = NULL
+                WHERE id = ?
+                """,
+                (placeholder, junk_hash, user_id),
             )
             conn.commit()
             return cursor.rowcount > 0
 
+    def list_active_refresh_sessions(self, user_id: int) -> list[dict]:
+        """Non-revoked, unexpired sessions for *user_id* (includes token_hash for server-side use only)."""
+        now = datetime.now(tz=timezone.utc)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT token_hash, created_at_utc, expires_at_utc, revoked
+                FROM refresh_sessions WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchall()
+
+        out: list[dict] = []
+        for row in rows:
+            if int(row["revoked"]) == 1:
+                continue
+            try:
+                exp = datetime.fromisoformat(str(row["expires_at_utc"]))
+            except ValueError:
+                continue
+            if now > exp:
+                continue
+            out.append(
+                {
+                    "token_hash": str(row["token_hash"]),
+                    "created_at_utc": str(row["created_at_utc"]),
+                    "expires_at_utc": str(row["expires_at_utc"]),
+                }
+            )
+        return sorted(out, key=lambda r: r["created_at_utc"], reverse=True)
+
+    def revoke_all_refresh_sessions_for_user(self, user_id: int) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE refresh_sessions SET revoked = 1 WHERE user_id = ? AND revoked = 0",
+                (user_id,),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
+    def store_refresh_session(self, user_id: int, refresh_token: str, expires_at_utc: str) -> None:
+        token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        now = datetime.now(tz=timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO refresh_sessions (token_hash, user_id, expires_at_utc, revoked, created_at_utc) VALUES (?, ?, ?, 0, ?)",
+                (token_hash, user_id, expires_at_utc, now),
+            )
+            conn.commit()
+
+    def is_refresh_session_active(self, refresh_token: str) -> bool:
+        token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT expires_at_utc, revoked FROM refresh_sessions WHERE token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+        if row is None or int(row["revoked"]) == 1:
+            return False
+        try:
+            return datetime.now(tz=timezone.utc) <= datetime.fromisoformat(str(row["expires_at_utc"]))
+        except ValueError:
+            return False
+
+    def revoke_refresh_session(self, refresh_token: str) -> None:
+        token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        with self._connect() as conn:
+            conn.execute("UPDATE refresh_sessions SET revoked = 1 WHERE token_hash = ?", (token_hash,))
+            conn.commit()
 
 
     def store_refresh_session(self, user_id: int, refresh_token: str, expires_at_utc: str) -> None:

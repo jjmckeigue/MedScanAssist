@@ -32,7 +32,11 @@ limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    logger.info("Starting MedScanAssist API (env=%s)", settings.app_env)
+    logger.info(
+        "Starting MedScanAssist API (env=%s, auth_enforced=%s)",
+        settings.app_env,
+        _is_auth_enforced(),
+    )
     try:
         model_service.ensure_ready()
         logger.info(
@@ -71,7 +75,15 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 
 
 def _is_auth_enforced() -> bool:
-    return settings.app_env.lower() in {"staging", "production"}
+    """Protected routes require JWT (or legacy API key) in staging/production.
+
+    In development, enforcement follows ``REQUIRE_AUTH`` so local work can stay open
+    or mirror production by setting ``REQUIRE_AUTH=true``.
+    """
+    env = settings.app_env.lower()
+    if env in {"production", "staging"}:
+        return True
+    return bool(settings.require_auth)
 
 OPEN_PATHS = {
     "/health",
@@ -139,6 +151,17 @@ async def jwt_auth_middleware(request: Request, call_next) -> Response:
                     status_code=401,
                     media_type="application/json",
                 )
+            email = payload.get("sub")
+            if email:
+                from backend.app.services.user_service import user_service
+
+                user = user_service.get_by_email(email)
+                if user is None or not user.get("is_active"):
+                    return Response(
+                        content='{"detail":"User not found or inactive."}',
+                        status_code=401,
+                        media_type="application/json",
+                    )
         except JWTError:
             return Response(
                 content='{"detail":"Invalid or expired token."}',

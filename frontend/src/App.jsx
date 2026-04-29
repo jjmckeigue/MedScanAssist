@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, Route, Routes, useLocation } from "react-router-dom";
-import { clearTokens, getCurrentUser, getModelInfo, healthCheck, isAuthenticated, logoutUser } from "./api";
+import {
+  clearTokens,
+  getCurrentUser,
+  getModelInfo,
+  healthCheck,
+  isAuthenticated,
+  logoutUser,
+} from "./api";
+import AccountSettingsPage from "./pages/AccountSettingsPage";
 import AnalyzePage from "./pages/AnalyzePage";
 import HistoryPage from "./pages/HistoryPage";
 import LoginPage from "./pages/LoginPage";
@@ -38,6 +46,21 @@ function App() {
       clearTokens();
       setAuthed(false);
       setCurrentUser(null);
+    }
+  }, []);
+
+  const handleAuthClear = useCallback(() => {
+    clearTokens();
+    setAuthed(false);
+    setCurrentUser(null);
+  }, []);
+
+  const handleProfileUpdated = useCallback(async () => {
+    try {
+      const u = await getCurrentUser();
+      setCurrentUser(u);
+    } catch {
+      /* ignore */
     }
   }, []);
 
@@ -167,17 +190,6 @@ function App() {
         <p>Upload a chest X-ray, run inference, and inspect Eigen-CAM in a transparent workflow.</p>
       </header>
 
-      {currentUser && (
-        <div className="user-bar">
-          <span className="user-info">
-            Signed in as <strong>{currentUser.full_name}</strong> ({currentUser.email})
-          </span>
-          <button type="button" className="ghost logout-btn" onClick={handleLogout}>
-            Sign Out
-          </button>
-        </div>
-      )}
-
       <aside className="clinical-disclaimer" role="alert">
         <strong>Clinical Use Notice</strong>
         <p>
@@ -221,6 +233,9 @@ function App() {
         </NavLink>
         <NavLink to="/patients" className={({ isActive }) => `tab-button ${isActive ? "active" : ""}`}>
           Patients
+        </NavLink>
+        <NavLink to="/settings" className={({ isActive }) => `tab-button ${isActive ? "active" : ""}`}>
+          Account
         </NavLink>
       </nav>
 
@@ -309,6 +324,17 @@ function App() {
         <Route path="/history" element={<HistoryPage />} />
         <Route path="/patients" element={<PatientsPage />} />
         <Route path="/patients/:patientId" element={<PatientDetailPage />} />
+        <Route
+          path="/settings"
+          element={
+            <AccountSettingsPage
+              currentUser={currentUser}
+              onProfileUpdated={handleProfileUpdated}
+              onAuthClear={handleAuthClear}
+              onSignOut={handleLogout}
+            />
+          }
+        />
       </Routes>
     </main>
     </>
