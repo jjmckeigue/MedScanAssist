@@ -128,10 +128,22 @@ class ModelService:
 
         import onnxruntime as ort
 
-        self._session = ort.InferenceSession(
-            str(self._checkpoint_path),
-            providers=["CPUExecutionProvider"],
-        )
+        try:
+            self._session = ort.InferenceSession(
+                str(self._checkpoint_path),
+                providers=["CPUExecutionProvider"],
+            )
+        except Exception as exc:
+            err = str(exc)
+            if ".onnx.data" in err or "external data" in err.lower():
+                raise RuntimeError(
+                    f"ONNX load failed ({self._checkpoint_path}): {exc}. "
+                    "The graph references external weight files that are not on this server. "
+                    "Fix: run `python -m backend.scripts.export_onnx` to write a single-file "
+                    "model, then commit the new `best_model.onnx` (or deploy `best_model.onnx.data` "
+                    "next to the `.onnx` if you keep external weights)."
+                ) from exc
+            raise
 
         meta: dict = {}
         if self._model_meta_path.exists():

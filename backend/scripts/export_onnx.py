@@ -97,19 +97,44 @@ def export(checkpoint_path: str, output_dir: str | None = None) -> None:
     dummy = torch.randn(1, 3, image_size, image_size)
 
     onnx_path = out_dir / "best_model.onnx"
-    torch.onnx.export(
-        wrapper,
-        dummy,
-        str(onnx_path),
-        input_names=["input"],
-        output_names=["logits", "activations"],
-        dynamic_axes={
+    # New default exporter (dynamo=True) targets opset 18 and may try to down-convert to
+    # opset 17, which can fail on version_converter (see onnx "axes_input_to_attribute").
+    # Legacy TorchScript export is stable for DenseNet/ResNet and avoids that path.
+    export_kw: dict = {
+        "input_names": ["input"],
+        "output_names": ["logits", "activations"],
+        "dynamic_axes": {
             "input": {0: "batch"},
             "logits": {0: "batch"},
             "activations": {0: "batch"},
         },
-        opset_version=17,
-    )
+        "opset_version": 17,
+    }
+    try:
+        torch.onnx.export(
+            wrapper,
+            dummy,
+            str(onnx_path),
+            dynamo=False,
+            **export_kw,
+        )
+    except TypeError:
+        # Older PyTorch without ``dynamo`` / kwargs layout — fall back to classic call.
+        torch.onnx.export(wrapper, dummy, str(onnx_path), **export_kw)
+    # Inline large initializers into one file (PyTorch may omit use_external_data_format on older builds).
+    try:
+        import onnx
+
+        model_proto = onnx.load(str(onnx_path))
+        onnx.save(model_proto, str(onnx_path), save_as_external_data=False)
+    except ImportError:
+        print(
+            "Warning: package 'onnx' not installed; if deployment fails looking for "
+            "`*.onnx.data`, run: pip install onnx && re-run this script."
+        )
+    data_sidecar = onnx_path.with_name(onnx_path.name + ".data")
+    if data_sidecar.exists():
+        data_sidecar.unlink()
     print(f"ONNX model saved to {onnx_path}")
 
     meta = {
