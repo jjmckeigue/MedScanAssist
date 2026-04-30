@@ -1163,16 +1163,16 @@ def train_single_split(
         mixup_criterion = SoftTargetCrossEntropy(weight=class_weights)
         status(f"{prefix}Mixup enabled (alpha={args.mixup_alpha})")
 
+    warmup_epochs = max(0, args.warmup_epochs)
+    last_block_epochs = min(max(args.epochs_last_block, 0), max(args.epochs_finetune, 0))
+    full_unfreeze_epochs = max(0, args.epochs_finetune - last_block_epochs)
+    total_epochs = warmup_epochs + args.epochs_head + last_block_epochs + full_unfreeze_epochs
+
     freeze_feature_extractor(model, arch)
     optimizer = build_optimizer(model, args.lr_head)
     scheduler = build_scheduler(optimizer, args, total_epochs=total_epochs)
 
     # Warmup schedule: linearly ramp LR from near-zero to lr_head over warmup epochs.
-    warmup_epochs = max(0, args.warmup_epochs)
-
-    last_block_epochs = min(max(args.epochs_last_block, 0), max(args.epochs_finetune, 0))
-    full_unfreeze_epochs = max(0, args.epochs_finetune - last_block_epochs)
-    total_epochs = warmup_epochs + args.epochs_head + last_block_epochs + full_unfreeze_epochs
 
     positive_idx = train_ds.classes.index("PNEUMONIA") if "PNEUMONIA" in train_ds.classes else len(train_ds.classes) - 1
 

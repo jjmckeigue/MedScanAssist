@@ -5,8 +5,8 @@
     "PNEUMONIA"
   ],
   "image_size": 224,
-  "temperature": 0.75,
-  "best_epoch": 3,
-  "best_val_acc": 0.7114485981308412,
-  "best_val_loss": 0.668093945378455
+  "temperature": 0.5,
+  "best_epoch": 1,
+  "best_val_acc": 0.875,
+  "best_val_loss": 0.35169580578804016
 }
