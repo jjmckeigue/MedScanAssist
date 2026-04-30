@@ -228,17 +228,35 @@ export const imageUrl = (filename) => `${API_BASE_URL}/images/${filename}`;
 
 // ---- Auth API ----
 
+const verifyEmailInFlight = new Map();
+
 export const getCurrentUser = async () => {
   const response = await fetchWithAuth(`${API_BASE_URL}/auth/me`);
   if (!response.ok) throw new Error("Not authenticated");
   return parseJsonSafely(response);
 };
 
-export const verifyEmail = async (token) => {
-  const response = await fetchWithTimeout(`${API_BASE_URL}/auth/verify?token=${encodeURIComponent(token)}`);
-  const data = await parseJsonSafely(response);
-  if (!response.ok) throw new Error(data.detail || "Verification failed");
-  return data;
+export const verifyEmail = (token) => {
+  const t = String(token ?? "").trim();
+  if (!t) {
+    return Promise.reject(new Error("No verification token provided."));
+  }
+  let pending = verifyEmailInFlight.get(t);
+  if (!pending) {
+    pending = (async () => {
+      const response = await fetchWithTimeout(
+        `${API_BASE_URL}/auth/verify?token=${encodeURIComponent(t)}`
+      );
+      const data = await parseJsonSafely(response);
+      if (!response.ok) throw new Error(data.detail || "Verification failed");
+      return data;
+    })();
+    pending.finally(() => {
+      verifyEmailInFlight.delete(t);
+    });
+    verifyEmailInFlight.set(t, pending);
+  }
+  return pending;
 };
 
 export const resendVerification = async (email) => {

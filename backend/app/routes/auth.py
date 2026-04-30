@@ -48,6 +48,8 @@ class RegisterRequest(BaseModel):
     def enforce_org_email(cls, value: EmailStr) -> str:
         validate_email_policy(str(value))
         return normalize_email(str(value))
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
@@ -168,6 +170,13 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
 async def verify_email(
     request: Request, token: str = Query(..., min_length=1)
 ) -> MessageResponse:
+    token = token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification link.")
+
+    if user_service.is_verification_redeemed(token):
+        return MessageResponse(message="Email already verified. You can sign in.")
+
     user = user_service.get_by_verification_token(token)
     if user is None:
         raise HTTPException(status_code=400, detail="Invalid or expired verification link.")
@@ -184,7 +193,7 @@ async def verify_email(
                 detail="Verification link has expired. Please request a new one.",
             )
 
-    user_service.mark_verified(user["id"])
+    user_service.complete_email_verification(user["id"], token)
     logger.info("Email verified: %s", user["email"])
     return MessageResponse(message="Email verified successfully! You can now sign in.")
 

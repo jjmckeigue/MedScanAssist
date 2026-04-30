@@ -7,7 +7,7 @@ export default function VerifyPage() {
   const [status, setStatus] = useState("verifying");
   const [message, setMessage] = useState("");
 
-  const token = searchParams.get("token");
+  const token = searchParams.get("token")?.trim() ?? "";
 
   useEffect(() => {
     if (!token) {

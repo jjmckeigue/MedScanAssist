@@ -105,6 +105,14 @@ class UserService:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS verification_redeemed (
+                    token_hash TEXT PRIMARY KEY,
+                    redeemed_at_utc TEXT NOT NULL
+                )
+                """
+            )
             conn.commit()
 
     def _migrate_add_verification_columns(self, conn: sqlite3.Connection) -> None:
@@ -169,6 +177,37 @@ class UserService:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    @staticmethod
+    def verification_token_hash(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def is_verification_redeemed(self, token: str) -> bool:
+        th = self.verification_token_hash(token)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM verification_redeemed WHERE token_hash = ? LIMIT 1",
+                (th,),
+            ).fetchone()
+        return row is not None
+
+    def complete_email_verification(self, user_id: int, raw_verification_token: str) -> bool:
+        """Set user verified and record token as redeemed (same transaction)."""
+
+        th = self.verification_token_hash(raw_verification_token)
+        now = datetime.now(tz=timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE users SET is_verified = 1, verification_token = NULL, "
+                "verification_token_expires = NULL WHERE id = ?",
+                (user_id,),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO verification_redeemed (token_hash, redeemed_at_utc) VALUES (?, ?)",
+                (th, now),
+            )
+            conn.commit()
+            return cur.rowcount > 0
 
     def set_verification_token(self, user_id: int, token: str, expires: str) -> bool:
         with self._connect() as conn:
