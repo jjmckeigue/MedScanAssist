@@ -9,6 +9,34 @@ from backend.app.config import settings
 logger = logging.getLogger("medscanassist.email")
 
 
+def _smtp_ready_for_send(admin_link_for_logs: str, purpose: str) -> bool:
+    """Gmail (and most providers) need both a non-empty SMTP_USER and SMTP_PASSWORD."""
+    user_ok = bool((settings.smtp_user or "").strip())
+    pwd_ok = bool((settings.smtp_password or "").strip())
+    if user_ok and pwd_ok:
+        return True
+    if not user_ok and not pwd_ok:
+        logger.warning(
+            "Cannot send %s email: SMTP_USER and SMTP_PASSWORD are not set on the API. "
+            "Admin verification link: %s",
+            purpose,
+            admin_link_for_logs,
+        )
+    elif not user_ok:
+        logger.warning(
+            "Cannot send %s email: SMTP_USER is empty (required with SMTP_PASSWORD). Link: %s",
+            purpose,
+            admin_link_for_logs,
+        )
+    else:
+        logger.warning(
+            "Cannot send %s email: SMTP_PASSWORD is empty. Link: %s",
+            purpose,
+            admin_link_for_logs,
+        )
+    return False
+
+
 def _build_verification_email(to_email: str, full_name: str, verify_url: str) -> EmailMessage:
     msg = EmailMessage()
     msg["Subject"] = "Verify your MedScanAssist account"
@@ -82,11 +110,7 @@ def send_verification_email(to_email: str, full_name: str, token: str) -> bool:
     """Send a verification email. Returns True on success, False on failure."""
     verify_url = f"{settings.frontend_url.rstrip('/')}/verify?token={token}"
 
-    if not settings.smtp_password:
-        logger.warning(
-            "SMTP_PASSWORD not configured — skipping email send. "
-            "Verification URL: %s", verify_url,
-        )
+    if not _smtp_ready_for_send(verify_url, "verification"):
         return False
 
     msg = _build_verification_email(to_email, full_name, verify_url)
@@ -177,11 +201,7 @@ def send_password_reset_email(to_email: str, full_name: str, token: str) -> bool
     """Send a password-reset email. Returns True on success, False on failure."""
     reset_url = f"{settings.frontend_url.rstrip('/')}/reset-password?token={token}"
 
-    if not settings.smtp_password:
-        logger.warning(
-            "SMTP_PASSWORD not configured — skipping password reset email. Reset URL: %s",
-            reset_url,
-        )
+    if not _smtp_ready_for_send(reset_url, "password reset"):
         return False
 
     msg = _build_password_reset_email(to_email, full_name, reset_url)

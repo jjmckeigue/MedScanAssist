@@ -197,9 +197,10 @@ export default function LoginPage({ onLogin }) {
               ) : (
                 <>
                   Your account was created, but the server could not send email to{" "}
-                  <strong>{email}</strong>. Configure <code className="inline-code">SMTP_PASSWORD</code>{" "}
-                  and <code className="inline-code">FRONTEND_URL</code> on the API, then use Resend
-                  below.
+                  <strong>{email}</strong>. On the API host, set{" "}
+                  <code className="inline-code">SMTP_USER</code>,{" "}
+                  <code className="inline-code">SMTP_PASSWORD</code> (Gmail app password), and{" "}
+                  <code className="inline-code">FRONTEND_URL</code>, then use Resend below.
                 </>
               )}
             </p>
