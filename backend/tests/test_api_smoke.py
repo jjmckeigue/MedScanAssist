@@ -50,6 +50,8 @@ def test_health_ok() -> None:
     assert payload["status"] in ("ok", "degraded")
     assert "checks" in payload
     assert payload["checks"]["database"] == "ok"
+    assert "email" in payload
+    assert "smtp_ready" in payload["email"]
 
 
 # ─── Predict ───
