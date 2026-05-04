@@ -270,6 +270,28 @@ export const resendVerification = async (email) => {
   return data;
 };
 
+export const requestPasswordReset = async (email) => {
+  const response = await fetchWithTimeout(`${API_BASE_URL}/auth/forgot-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  const data = await parseJsonSafely(response);
+  if (!response.ok) throw new Error(data.detail || "Request failed");
+  return data;
+};
+
+export const resetPasswordWithToken = async (token, newPassword) => {
+  const response = await fetchWithTimeout(`${API_BASE_URL}/auth/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, new_password: newPassword }),
+  });
+  const data = await parseJsonSafely(response);
+  if (!response.ok) throw new Error(data.detail || "Password reset failed");
+  return data;
+};
+
 export const logoutUser = async () => {
   const refreshToken = getRefreshToken();
   if (!refreshToken) return;

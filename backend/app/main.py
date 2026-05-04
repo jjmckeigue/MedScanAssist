@@ -95,6 +95,8 @@ OPEN_PATHS = {
     "/auth/refresh",
     "/auth/verify",
     "/auth/resend-verification",
+    "/auth/forgot-password",
+    "/auth/reset-password",
 }
 
 

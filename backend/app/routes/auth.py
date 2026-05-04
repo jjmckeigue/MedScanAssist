@@ -19,7 +19,7 @@ from backend.app.auth import (
     verify_password,
 )
 from backend.app.config import settings
-from backend.app.services.email_service import send_verification_email
+from backend.app.services.email_service import send_password_reset_email, send_verification_email
 from backend.app.services.user_service import (
     generate_verification_token,
     normalize_email,
@@ -88,7 +88,34 @@ class MessageResponse(BaseModel):
 class RegisterResponse(BaseModel):
     message: str
     requires_verification: bool = True
+    verification_email_sent: bool
+    dev_verification_url: str | None = None
 
+
+class ResendVerificationResponse(BaseModel):
+    message: str
+    verification_email_sent: bool
+    dev_verification_url: str | None = None
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+    @field_validator("email")
+    @classmethod
+    def normalize_forgot_email(cls, value: EmailStr) -> str:
+        return normalize_email(str(value))
+
+
+class ForgotPasswordResponse(BaseModel):
+    message: str
+    reset_email_sent: bool = False
+    dev_reset_url: str | None = None
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=1)
+    new_password: str = Field(min_length=8)
 
 
 class LogoutRequest(BaseModel):
@@ -120,10 +147,31 @@ class SessionInfoResponse(BaseModel):
 # ---- Helpers ----
 
 
+def _is_dev_env() -> bool:
+    return settings.app_env.lower() in ("development", "dev", "local")
+
+
+def _verification_link(token: str) -> str:
+    base = settings.frontend_url.rstrip("/")
+    return f"{base}/verify?token={token}"
+
+
+def _password_reset_link(token: str) -> str:
+    base = settings.frontend_url.rstrip("/")
+    return f"{base}/reset-password?token={token}"
+
+
 def _token_expiry() -> str:
     return (
         datetime.now(tz=timezone.utc)
         + timedelta(hours=settings.verification_token_expire_hours)
+    ).isoformat()
+
+
+def _password_reset_token_expiry() -> str:
+    return (
+        datetime.now(tz=timezone.utc)
+        + timedelta(hours=settings.password_reset_token_expire_hours)
     ).isoformat()
 
 
@@ -156,12 +204,18 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
             detail="A user with this email already exists.",
         ) from exc
 
-    send_verification_email(body.email, body.full_name, token)
-    logger.info("User registered (pending verification): %s", body.email)
+    email_sent = send_verification_email(body.email, body.full_name, token)
+    logger.info("User registered (pending verification): %s email_sent=%s", body.email, email_sent)
+
+    dev_url = None
+    if not email_sent and _is_dev_env():
+        dev_url = _verification_link(token)
 
     return RegisterResponse(
         message="Account created. Please check your email to verify your account.",
         requires_verification=True,
+        verification_email_sent=email_sent,
+        dev_verification_url=dev_url,
     )
 
 
@@ -198,27 +252,80 @@ async def verify_email(
     return MessageResponse(message="Email verified successfully! You can now sign in.")
 
 
-@router.post("/resend-verification", response_model=MessageResponse)
+@router.post("/resend-verification", response_model=ResendVerificationResponse)
 @limiter.limit("2/minute")
 async def resend_verification(
     request: Request, body: ResendVerificationRequest
-) -> MessageResponse:
+) -> ResendVerificationResponse:
     user = user_service.get_by_email(body.email)
 
     if user is None or user["is_verified"]:
-        return MessageResponse(
-            message="If an unverified account exists for this email, a new verification link has been sent."
+        return ResendVerificationResponse(
+            message="If an unverified account exists for this email, a new verification link has been sent.",
+            verification_email_sent=False,
+            dev_verification_url=None,
         )
 
     token = generate_verification_token()
     expires = _token_expiry()
     user_service.set_verification_token(user["id"], token, expires)
-    send_verification_email(body.email, user["full_name"], token)
-    logger.info("Resent verification email: %s", body.email)
+    email_sent = send_verification_email(body.email, user["full_name"], token)
+    logger.info("Resent verification email: %s email_sent=%s", body.email, email_sent)
 
-    return MessageResponse(
-        message="If an unverified account exists for this email, a new verification link has been sent."
+    dev_url = None
+    if not email_sent and _is_dev_env():
+        dev_url = _verification_link(token)
+
+    return ResendVerificationResponse(
+        message="If an unverified account exists for this email, a new verification link has been sent.",
+        verification_email_sent=email_sent,
+        dev_verification_url=dev_url,
     )
+
+
+@router.post("/forgot-password", response_model=ForgotPasswordResponse)
+@limiter.limit("3/minute")
+async def forgot_password(request: Request, body: ForgotPasswordRequest) -> ForgotPasswordResponse:
+    """Always return the same message for privacy; email is only sent when an active account exists."""
+    generic_message = "If an account exists for that email, we sent password reset instructions."
+    user = user_service.get_by_email(body.email)
+    email_sent = False
+    dev_url: str | None = None
+
+    if user is not None and user.get("is_active"):
+        token = generate_verification_token()
+        expires = _password_reset_token_expiry()
+        user_service.set_password_reset_token(user["id"], token, expires)
+        email_sent = send_password_reset_email(user["email"], user["full_name"], token)
+        if not email_sent and _is_dev_env():
+            dev_url = _password_reset_link(token)
+        logger.info("Password reset requested: %s email_sent=%s", body.email, email_sent)
+
+    return ForgotPasswordResponse(
+        message=generic_message,
+        reset_email_sent=email_sent,
+        dev_reset_url=dev_url,
+    )
+
+
+@router.post("/reset-password", response_model=MessageResponse)
+@limiter.limit("5/minute")
+async def reset_password_endpoint(request: Request, body: ResetPasswordRequest) -> MessageResponse:
+    try:
+        validate_password_strength(body.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    raw = body.token.strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link.")
+
+    hashed = hash_password(body.new_password)
+    if user_service.apply_password_reset(raw, hashed):
+        logger.info("Password reset completed via token.")
+        return MessageResponse(message="Your password has been updated. You can sign in.")
+
+    raise HTTPException(status_code=400, detail="Invalid or expired reset link.")
 
 
 @router.post("/login", response_model=TokenResponse)

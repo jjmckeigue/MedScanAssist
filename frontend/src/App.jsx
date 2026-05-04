@@ -14,6 +14,7 @@ import HistoryPage from "./pages/HistoryPage";
 import LoginPage from "./pages/LoginPage";
 import PatientDetailPage from "./pages/PatientDetailPage";
 import PatientsPage from "./pages/PatientsPage";
+import ResetPasswordPage from "./pages/ResetPasswordPage";
 import VerifyPage from "./pages/VerifyPage";
 
 const BRAND_ASSETS = { light: "/branding/logo_light.png" };
@@ -155,9 +156,12 @@ function App() {
 
   const location = useLocation();
 
-  // Verify page is always accessible (user clicks link from email)
+  // Email links (verify / password reset) work without an existing session
   if (location.pathname === "/verify") {
     return <VerifyPage />;
+  }
+  if (location.pathname === "/reset-password") {
+    return <ResetPasswordPage />;
   }
 
   if (!authed) {

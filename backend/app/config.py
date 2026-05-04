@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     smtp_password: str = Field(default="", alias="SMTP_PASSWORD")
     smtp_from_name: str = Field(default="MedScanAssist", alias="SMTP_FROM_NAME")
     verification_token_expire_hours: int = Field(default=24, alias="VERIFICATION_TOKEN_EXPIRE_HOURS")
+    password_reset_token_expire_hours: int = Field(default=1, alias="PASSWORD_RESET_TOKEN_EXPIRE_HOURS")
     frontend_url: str = Field(default="http://localhost:5173", alias="FRONTEND_URL")
 
     require_auth: bool = Field(

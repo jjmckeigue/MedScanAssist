@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import logging
 import re
 import secrets
 import sqlite3
-import hashlib
 
 import bcrypt
 from datetime import datetime, timedelta, timezone
@@ -11,6 +12,7 @@ from pathlib import Path
 
 from backend.app.config import settings
 
+logger = logging.getLogger("medscanassist.users")
 
 DISPOSABLE_EMAIL_DOMAINS = {
     "mailinator.com",
@@ -24,7 +26,14 @@ DISPOSABLE_EMAIL_DOMAINS = {
 
 
 def normalize_email(email: str) -> str:
-    return email.strip().lower()
+    """Lowercase and strip. For Gmail / Googlemail, drop dots in the local part (Google treats them as equivalent)."""
+    s = email.strip().lower()
+    if "@" not in s:
+        return s
+    local, _, domain = s.partition("@")
+    if domain in ("gmail.com", "googlemail.com"):
+        local = local.replace(".", "")
+    return f"{local}@{domain}"
 
 
 def validate_email_policy(email: str) -> None:
@@ -83,6 +92,8 @@ class UserService:
                 """
             )
             self._migrate_add_verification_columns(conn)
+            self._migrate_add_password_reset_columns(conn)
+            self._migrate_gmail_local_dots(conn)
 
             conn.execute(
                 """
@@ -124,6 +135,31 @@ class UserService:
             conn.execute("ALTER TABLE users ADD COLUMN verification_token TEXT")
         if "verification_token_expires" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN verification_token_expires TEXT")
+
+    def _migrate_add_password_reset_columns(self, conn: sqlite3.Connection) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "password_reset_token" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN password_reset_token TEXT")
+        if "password_reset_expires" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN password_reset_expires TEXT")
+
+    def _migrate_gmail_local_dots(self, conn: sqlite3.Connection) -> None:
+        """Align stored emails with Gmail canonical form so login matches regardless of dot placement."""
+        rows = conn.execute("SELECT id, email FROM users").fetchall()
+        for row in rows:
+            uid = int(row["id"])
+            old = str(row["email"])
+            new = normalize_email(old)
+            if new == old:
+                continue
+            try:
+                conn.execute("UPDATE users SET email = ? WHERE id = ?", (new, uid))
+            except sqlite3.IntegrityError:
+                logger.warning(
+                    "Skipping Gmail email migration for user id=%s: canonical address %r already exists.",
+                    uid,
+                    new,
+                )
 
     # ---- CRUD ----
 
@@ -167,6 +203,22 @@ class UserService:
                 "SELECT * FROM users WHERE verification_token = ?", (token,)
             ).fetchone()
         return self._row_to_dict(row) if row else None
+
+    def get_by_password_reset_token(self, token: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM users WHERE password_reset_token = ?", (token,)
+            ).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def set_password_reset_token(self, user_id: int, token: str, expires: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE users SET password_reset_token = ?, password_reset_expires = ? WHERE id = ?",
+                (token, expires, user_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
 
     def mark_verified(self, user_id: int) -> bool:
         with self._connect() as conn:
@@ -234,6 +286,34 @@ class UserService:
             conn.commit()
             return cursor.rowcount > 0
 
+    def apply_password_reset(self, raw_token: str, new_hashed_password: str) -> bool:
+        """Set a new password from a valid reset token, clear the token, and revoke refresh sessions."""
+        user = self.get_by_password_reset_token(raw_token)
+        if user is None or not user.get("is_active"):
+            return False
+        exp = user.get("password_reset_expires")
+        if exp:
+            try:
+                if datetime.now(tz=timezone.utc) > datetime.fromisoformat(str(exp)):
+                    return False
+            except ValueError:
+                return False
+        user_id = int(user["id"])
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE users SET
+                    hashed_password = ?,
+                    password_reset_token = NULL,
+                    password_reset_expires = NULL
+                WHERE id = ? AND password_reset_token = ?
+                """,
+                (new_hashed_password, user_id, raw_token),
+            )
+            conn.execute("UPDATE refresh_sessions SET revoked = 1 WHERE user_id = ?", (user_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
     def deactivate_release_email(self, user_id: int) -> bool:
         """Deactivate user, revoke sessions, scramble password, and free the email for re-registration."""
         placeholder = f"deactivated.{secrets.token_hex(16)}@inactive.local"
@@ -249,7 +329,9 @@ class UserService:
                     is_active = 0,
                     is_verified = 0,
                     verification_token = NULL,
-                    verification_token_expires = NULL
+                    verification_token_expires = NULL,
+                    password_reset_token = NULL,
+                    password_reset_expires = NULL
                 WHERE id = ?
                 """,
                 (placeholder, junk_hash, user_id),
@@ -327,37 +409,6 @@ class UserService:
             conn.execute("UPDATE refresh_sessions SET revoked = 1 WHERE token_hash = ?", (token_hash,))
             conn.commit()
 
-
-    def store_refresh_session(self, user_id: int, refresh_token: str, expires_at_utc: str) -> None:
-        token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
-        now = datetime.now(tz=timezone.utc).isoformat()
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO refresh_sessions (token_hash, user_id, expires_at_utc, revoked, created_at_utc) VALUES (?, ?, ?, 0, ?)",
-                (token_hash, user_id, expires_at_utc, now),
-            )
-            conn.commit()
-
-    def is_refresh_session_active(self, refresh_token: str) -> bool:
-        token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT expires_at_utc, revoked FROM refresh_sessions WHERE token_hash = ?",
-                (token_hash,),
-            ).fetchone()
-        if row is None or int(row["revoked"]) == 1:
-            return False
-        try:
-            return datetime.now(tz=timezone.utc) <= datetime.fromisoformat(str(row["expires_at_utc"]))
-        except ValueError:
-            return False
-
-    def revoke_refresh_session(self, refresh_token: str) -> None:
-        token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
-        with self._connect() as conn:
-            conn.execute("UPDATE refresh_sessions SET revoked = 1 WHERE token_hash = ?", (token_hash,))
-            conn.commit()
-
     def revoke_token(self, token: str) -> None:
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
         now = datetime.now(tz=timezone.utc).isoformat()
@@ -376,6 +427,7 @@ class UserService:
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict:
+        keys = set(row.keys())
         return {
             "id": int(row["id"]),
             "email": str(row["email"]),
@@ -387,6 +439,8 @@ class UserService:
             "is_verified": bool(row["is_verified"]),
             "verification_token": row["verification_token"],
             "verification_token_expires": row["verification_token_expires"],
+            "password_reset_token": row["password_reset_token"] if "password_reset_token" in keys else None,
+            "password_reset_expires": row["password_reset_expires"] if "password_reset_expires" in keys else None,
         }
 
 
