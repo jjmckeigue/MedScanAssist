@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 
     smtp_host: str = Field(default="smtp.gmail.com", alias="SMTP_HOST")
     smtp_port: int = Field(default=587, alias="SMTP_PORT")
-    smtp_user: str = Field(default="medscanassist@gmail.com", alias="SMTP_USER")
+    smtp_user: str = Field(default="", alias="SMTP_USER")
     smtp_password: str = Field(default="", alias="SMTP_PASSWORD")
     smtp_from_name: str = Field(default="MedScanAssist", alias="SMTP_FROM_NAME")
     verification_token_expire_hours: int = Field(default=24, alias="VERIFICATION_TOKEN_EXPIRE_HOURS")
