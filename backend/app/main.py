@@ -86,7 +86,7 @@ def _is_auth_enforced() -> bool:
     return bool(settings.require_auth)
 
 OPEN_PATHS = {
-    "/health",
+    "/api-status",
     "/docs",
     "/openapi.json",
     "/redoc",

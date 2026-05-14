@@ -121,7 +121,7 @@ async function uploadImage(endpoint, file, query = {}) {
 // ---- Public API ----
 
 export const healthCheck = async () => {
-  const response = await fetchWithAuth(`${API_BASE_URL}/health`, {}, HEALTH_TIMEOUT_MS);
+  const response = await fetchWithAuth(`${API_BASE_URL}/api-status`, {}, HEALTH_TIMEOUT_MS);
   if (!response.ok) {
     throw new Error("Health check failed");
   }

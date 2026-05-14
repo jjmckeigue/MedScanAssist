@@ -59,7 +59,7 @@ def _email_diagnostics() -> dict:
     return out
 
 
-@router.get("/health")
+@router.get("/api-status")
 def health() -> JSONResponse:
     checks: dict[str, str] = {}
 
