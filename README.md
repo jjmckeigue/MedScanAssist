@@ -15,9 +15,13 @@ This repository demonstrates:
 - **Evaluation & validation**: confusion matrix, ROC, PR, calibration, threshold
   tuning, sensitivity/specificity, shortcut stress testing, and optional
   subgroup fairness audits
-- **MLOps & deployment**: FastAPI serving, Docker packaging, health checks, API
-  key auth, checkpoint versioning, temperature-scaled calibration, TTA, and
-  PSI-based prediction drift monitoring
+- **MLOps & deployment**: FastAPI serving, Docker packaging, health checks,
+  checkpoint versioning, temperature-scaled calibration, TTA, and PSI-based
+  prediction drift monitoring. Deployed split-stack on Vercel (frontend) and
+  Render (backend).
+- **Auth & operations**: JWT authentication with email verification and password
+  reset, role-based admin dashboard for aggregate usage metrics, rate limiting,
+  PHI audit log, and Web Analytics for traffic/funnel visibility
 - **Responsible AI**: Eigen-CAM explainability with lung-focus/off-lung attention
   warnings, clinician feedback loop, and governance-ready audit artifacts
 
@@ -29,7 +33,14 @@ This repository demonstrates:
 | SimpleCNN vs DenseNet121/ResNet50 training and comparison | **Implemented** — `train.py` + `compare_models.py` |
 | Confusion matrix, ROC, PR, calibration, threshold tuning | **Implemented** — generated automatically after training |
 | Shortcut stress testing (corner/center masking) | **Implemented** — generated automatically after training |
-| FastAPI inference with Docker, health checks, API key auth | **Implemented** — `docker compose up --build backend` |
+| FastAPI inference with Docker, health checks | **Implemented** — `docker compose up --build backend` |
+| JWT auth with email verification and password reset | **Implemented** — `/auth/*` endpoints, bcrypt + python-jose |
+| Role-based admin dashboard (aggregate, no-PHI) | **Implemented** — `/admin/*` endpoints + `/admin` frontend page |
+| Self-serve admin bootstrap via env var | **Implemented** — `ADMIN_BOOTSTRAP_EMAIL` auto-promotes on signup or startup |
+| Persistent storage on Render (SQLite + uploads) | **Implemented** — 1 GB disk mounted at `/app/backend/artifacts/` via `render.yaml` |
+| Rate limiting on auth and admin endpoints | **Implemented** — `slowapi` per-IP limits |
+| Web Analytics for traffic + funnel | **Implemented** — Vercel Web Analytics |
+| Production env hardening (refuses to boot with default JWT secret) | **Implemented** — startup check in `backend/app/main.py` |
 | Eigen-CAM explainability with lung-focus safety warnings | **Implemented** — `/gradcam` and `/analyze` endpoints |
 | Temperature-scaled calibration and TTA | **Implemented** — stored in checkpoint, applied at inference |
 | PSI-based prediction drift monitoring | **Implemented** — `GET /history/drift` |
@@ -41,9 +52,13 @@ This repository demonstrates:
 ## Stack
 
 - Backend: Python 3.11, FastAPI, Uvicorn, PyTorch, torchvision, scikit-learn
+- Auth & security: JWT (`python-jose`), `bcrypt` password hashing, `slowapi`
+  rate limiting, SQLite for users / history / PHI audit log
 - Explainability: Eigen-CAM (gradient-free, ONNX-compatible class activation mapping)
-- Frontend: React + Vite (Node 18+ recommended; `frontend/.nvmrc` included)
+- Frontend: React + Vite (Node 18+ recommended; `frontend/.nvmrc` included),
+  Vercel Web Analytics
 - Packaging: Docker + Docker Compose
+- Hosting: Vercel (frontend SPA) + Render (FastAPI backend in Docker)
 
 ## Project Structure
 
@@ -51,11 +66,21 @@ This repository demonstrates:
 medscanassist/
   backend/
     app/
-      main.py              # FastAPI application entry point
+      main.py              # FastAPI app, JWT middleware, security headers, startup checks
+      auth.py              # JWT helpers + get_current_user / get_admin_user dependencies
       config.py            # Pydantic settings (env-driven)
       schemas.py           # Request/response models
-      routes/              # API route handlers
-      services/            # Model inference, Eigen-CAM, history, patients
+      routes/
+        auth.py            # /auth/* (register, login, refresh, verify, reset, sessions, me)
+        admin.py           # /admin/* (stats, users, activity) — role-gated, no PHI
+        analyze.py         # Combined predict + Eigen-CAM
+        predict.py         # /predict
+        gradcam.py         # /gradcam (Eigen-CAM overlay)
+        history.py         # Analysis history + drift + clinician feedback
+        patients.py        # Patient profiles
+        health.py          # /api-status
+        model_info.py      # /model-info
+      services/            # Model inference, Eigen-CAM, history, patients, users, email
     training/
       train.py             # Training loop (transfer learning + SimpleCNN)
       evaluate.py          # Standalone test-set evaluation
@@ -63,17 +88,29 @@ medscanassist/
       compare_models.py    # Multi-architecture comparison utility
       data_utils.py        # Transforms, augmentation, dataset loading
       gradcam.py           # Offline CAM generation scaffold
+    scripts/
+      export_onnx.py       # Export PyTorch checkpoint to ONNX
+      promote_admin.py     # `python -m backend.scripts.promote_admin <email>`
     checkpoints/           # Saved model weights (.pt, .onnx)
-    artifacts/             # Training metrics, plots, EDA, comparison tables
+    artifacts/             # Training metrics, plots, EDA, history.db (SQLite)
     requirements.txt
     Dockerfile
   frontend/
+    public/
+      robots.txt           # Disallow auth-gated routes from indexing
+      branding/
     src/
+      pages/               # AnalyzePage, HistoryPage, PatientsPage, LoginPage, AdminPage, ...
+      App.jsx              # Routing + nav, admin link gated by role
+      main.jsx             # Mounts <App /> and <Analytics />
+      api.js               # Token-aware fetch helpers (auth + admin)
     package.json
   data/
     raw/                   # Dataset files (git-ignored)
     processed/
   docker-compose.yml
+  vercel.json              # Frontend deployment config (Vercel)
+  render.yaml              # Backend deployment config (Render)
   .env.example
 ```
 
@@ -94,7 +131,13 @@ medscanassist/
    - Local: `python -m pip install -r backend/requirements.txt` then
      `python -m uvicorn backend.app.main:app --reload --port 8000`
    - Docker: `docker compose up --build backend`
-5. Visit API docs at [http://localhost:8000/docs](http://localhost:8000/docs)
+5. Run frontend (in a separate shell):
+   - `cd frontend && npm install && npm run dev`
+   - The dev server reads `VITE_API_BASE_URL` from `frontend/.env`; defaults to
+     `http://localhost:8000` if unset.
+6. Visit:
+   - SPA: [http://localhost:5173](http://localhost:5173)
+   - API docs (Swagger UI): [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ## Training (Transfer Learning)
 
@@ -350,11 +393,146 @@ Outputs: `backend/artifacts/kfold/fold_*/best_model.pt` and `backend/artifacts/k
 - **Clinician feedback**: `POST /history/{id}/feedback` with `{"feedback": "correct"}` or `{"feedback": "incorrect"}` to flag predictions. Displayed in the Review History UI.
 - **Prediction drift monitoring**: `GET /history/drift` computes Population Stability Index (PSI) between baseline and recent prediction confidence distributions, alerting when distribution shift exceeds the 0.2 threshold.
 
+## Authentication, Roles & Admin Dashboard
+
+MedScanAssist uses standard JWT auth with email verification. Account state and
+sessions are stored in the same SQLite database as analysis history.
+
+- **Registration → verification → login**: Sign-up emails a one-time verification
+  link. Unverified accounts cannot sign in. Forgot-password issues a separate
+  short-lived reset token. Bcrypt is used for password hashing.
+- **Refresh tokens**: Access tokens are short-lived (`ACCESS_TOKEN_EXPIRE_MINUTES`,
+  default 30); refresh tokens are rotated on every use and individually revocable.
+  Listing and revoking sessions is exposed via `/auth/sessions` and
+  `/auth/logout-all`.
+- **Rate limiting**: `slowapi` per-IP limits guard `/auth/login`,
+  `/auth/register`, `/auth/forgot-password`, and the entire `/admin/*` surface.
+- **Role-based admin access**: The `users.role` column gates the `/admin/*`
+  routes via the `get_admin_user` dependency. There is no email allowlist in
+  code — promotion is an explicit DB write, so the security boundary lives in
+  one place. Two ways to promote yourself:
+
+  ```bash
+  # 1) Live deployment: set ADMIN_BOOTSTRAP_EMAIL on the host.
+  #    - On signup with this email, the new user is created with role='admin'.
+  #    - If the user already exists, they are promoted on the next startup.
+  #    Gmail dot-normalization is applied before comparison.
+
+  # 2) Local / ad-hoc: run the CLI directly against the SQLite file.
+  python -m backend.scripts.promote_admin you@your.email
+  # revert with --demote
+  ```
+
+  Once promoted, the SPA shows an `Admin` tab at `/admin` with aggregate
+  user/scan stats, a 14-day scans-per-day chart, and a paginated users table.
+  The admin endpoints intentionally return **no PHI**: no patient names, MRNs,
+  uploaded filenames, or scan images.
+- **PHI audit log**: `phi_audit_log` table records who accessed which PHI
+  resource and when (see `history_service.log_phi_access`).
+- **Defense-in-depth**: The frontend route guard is convenience-only; every
+  `/admin/*` request is independently re-checked server-side. A user without
+  `role = 'admin'` receives `403` regardless of client state.
+
+## Deployment
+
+This project is deployed as a **split stack**:
+
+| Layer | Host | Config | Notes |
+|-------|------|--------|-------|
+| Frontend SPA | Vercel | `vercel.json` | Static build of `frontend/`; serves `index.html` for client-side routes. Vercel Web Analytics is enabled via the `@vercel/analytics` package. |
+| Backend API | Render | `render.yaml` | Docker build from `backend/Dockerfile`; runs FastAPI + Uvicorn on a Standard instance with a 1 GB persistent disk. |
+
+### Persistent storage on Render
+
+Free Render instances have ephemeral disks — every redeploy wipes accounts,
+history, and the audit log. To make user signups and scan history durable, the
+service runs on the Standard tier with a persistent disk mounted at
+`/app/backend/artifacts/`:
+
+```yaml
+disk:
+  name: medscanassist-data
+  mountPath: /app/backend/artifacts
+  sizeGB: 1
+```
+
+Both `HISTORY_DB_PATH` and `UPLOAD_DIR` are explicitly routed into that
+directory via env vars in `render.yaml`. The persistent disk survives every
+redeploy, so the SQLite database, the PHI audit log, and uploaded images
+persist across pushes.
+
+### Environment variables — where each one belongs
+
+The JWT secret, SMTP credentials, and anything else sensitive belong on
+**Render only** — the backend signs/verifies tokens server-side. The frontend
+must never see them. The only variable Vercel needs is the public API URL.
+
+**Render (backend):**
+
+| Variable | Set via | Notes |
+|----------|---------|-------|
+| `APP_ENV` | `render.yaml` | `production` |
+| `CORS_ORIGINS` | `render.yaml` | Comma-separated production origins only |
+| `HISTORY_DB_PATH` | `render.yaml` | Path on the persistent disk |
+| `UPLOAD_DIR` | `render.yaml` | Path on the persistent disk |
+| `REQUIRE_CHECKPOINT` | `render.yaml` | `false` for placeholder mode if no checkpoint shipped |
+| `JWT_SECRET_KEY` | Dashboard (secret) | Generate with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. API **refuses to start** in `staging`/`production` if left at default or under 32 chars. |
+| `SMTP_USER`, `SMTP_PASSWORD` | Dashboard (secret) | Verification + reset emails (Gmail: 16-char App Password) |
+| `FRONTEND_URL` | Dashboard (secret) | Your real Vercel domain, so email links point at the SPA |
+| `ADMIN_BOOTSTRAP_EMAIL` | Dashboard | Optional. The first account registered with this email is created with `role='admin'`. If the account already exists, it is promoted on the next startup. |
+
+**Vercel (frontend, public):**
+
+- `VITE_API_BASE_URL` — full URL of the Render backend
+  (e.g. `https://medscanassist-api.onrender.com`)
+
+After updating envs on Render, the service redeploys automatically. After
+updating envs on Vercel, redeploy the frontend so Vite re-bakes the new value
+into the build.
+
+### Indexing / crawler controls
+
+The app is a portfolio/demo, not a clinical product. To reduce the chance of
+the wrong audience finding it:
+
+- `frontend/public/robots.txt` allows the landing page but disallows
+  `/analyze`, `/history`, `/patients`, `/settings`, `/admin`, `/verify`,
+  `/reset-password`.
+- Responses from `GET /images/{filename}` carry
+  `X-Robots-Tag: noindex, nofollow, noarchive, noimageindex`.
+- A "Portfolio demonstration — do not upload identifiable patient data" notice
+  appears beside the Clinical Use disclaimer on every page.
+
 ## API Endpoints (v2)
 
-### Core Inference
+All routes except those under `Public` below require a valid `Authorization:
+Bearer <access_token>` header. Auth is enforced unconditionally in
+`staging`/`production` and toggled via `REQUIRE_AUTH` in development. See
+*Authentication, Roles & Admin Dashboard* below.
 
-- `GET /health` - service health check
+### Public
+
+- `GET /api-status` - service health (model + database connectivity, email diagnostics)
+- `POST /auth/register` - create an account (sends verification email)
+- `POST /auth/login` - exchange email+password for access + refresh tokens
+- `POST /auth/refresh` - rotate tokens with a valid refresh token
+- `GET  /auth/verify` - confirm an email-verification token from the link
+- `POST /auth/resend-verification` - re-send verification email
+- `POST /auth/forgot-password` - request a password reset email
+- `POST /auth/reset-password` - complete a password reset with a valid token
+
+### Authenticated user
+
+- `GET  /auth/me` - current user profile
+- `PUT  /auth/me` - update the current user's profile
+- `POST /auth/change-password` - change password with the current password
+- `GET  /auth/sessions` - list active refresh sessions for the current user
+- `POST /auth/logout` - revoke the current refresh token + access token
+- `POST /auth/logout-all` - revoke every active session for the current user
+- `DELETE /auth/me` - deactivate account and release the email for re-registration
+
+### Core inference
+
 - `GET /model-info` - returns model/checkpoint metadata, runtime mode, and temperature scaling factor
 - `POST /predict` - predicts class probabilities from an uploaded CXR image
   - optional query: `threshold` (0.0 to 1.0) for decision-threshold override
@@ -385,6 +563,13 @@ Outputs: `backend/artifacts/kfold/fold_*/best_model.pt` and `backend/artifacts/k
 ### Image Serving
 
 - `GET /images/{filename}` - serve a stored X-ray image by filename
+  (response carries `X-Robots-Tag: noindex, nofollow, noarchive, noimageindex`)
+
+### Admin (role `admin` only, rate-limited 30/min)
+
+- `GET /admin/stats` - aggregate user + scan counts (no PHI, no filenames)
+- `GET /admin/users?limit&offset` - paginated user list (email, name, role, verified, active)
+- `GET /admin/activity?days` - per-day scan counts for the last *N* days (default 14)
 
 ### Note on explainability method naming
 

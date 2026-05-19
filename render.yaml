@@ -4,7 +4,17 @@ services:
     runtime: docker
     dockerfilePath: backend/Dockerfile
     dockerContext: .
-    plan: free
+    # NOTE: keep this in sync with the dashboard. Standard ($25/mo) gives 2GB
+    # RAM (comfortable for the ONNX model) and access to persistent disks.
+    plan: standard
+    healthCheckPath: /api-status
+    # Persistent disk so the SQLite database (users, history, audit log) and
+    # uploaded images survive redeploys. Mounted over the directory the
+    # Dockerfile already creates with appuser ownership.
+    disk:
+      name: medscanassist-data
+      mountPath: /app/backend/artifacts
+      sizeGB: 1
     envVars:
       - key: APP_ENV
         value: production
@@ -12,4 +22,23 @@ services:
         value: "false"
       - key: CORS_ORIGINS
         value: "https://med-scan-assist.vercel.app,https://medscanassist.com"
-    healthCheckPath: /api-status
+      # File-system paths -- both routed onto the persistent disk above.
+      - key: HISTORY_DB_PATH
+        value: /app/backend/artifacts/history.db
+      - key: UPLOAD_DIR
+        value: /app/backend/artifacts/uploads
+      # Secrets: declared here so the structure is reproducible, but values
+      # are set in the Render dashboard (sync: false keeps them out of YAML).
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      # Optional: the first account that registers with this email is created
+      # with role='admin'. If the account already exists, it is promoted on
+      # the next startup. Leave blank to disable.
+      - key: ADMIN_BOOTSTRAP_EMAIL
+        sync: false

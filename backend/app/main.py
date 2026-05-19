@@ -64,6 +64,38 @@ def _validate_runtime_secrets() -> None:
                 )
 
 
+def _bootstrap_admin_account() -> None:
+    """Promote the user whose email matches ``ADMIN_BOOTSTRAP_EMAIL``.
+
+    Runs on every startup. Handles the case where the operator set the env var
+    *after* signing up (or after a fresh persistent-disk deploy where the user
+    re-registered). No-op when the env var is empty, the user does not exist,
+    or the user is already an admin.
+    """
+    raw = (settings.admin_bootstrap_email or "").strip()
+    if not raw:
+        return
+
+    from backend.app.services.user_service import normalize_email, user_service
+
+    email = normalize_email(raw)
+    user = user_service.get_by_email(email)
+    if user is None:
+        logger.info(
+            "ADMIN_BOOTSTRAP_EMAIL is set to %s but no user exists yet; "
+            "they will be promoted automatically when they register.",
+            email,
+        )
+        return
+    if str(user.get("role", "")).lower() == "admin":
+        return
+    promoted = user_service.promote_to_admin(email)
+    if promoted is not None:
+        logger.info("Bootstrap admin promoted at startup: %s", email)
+    else:
+        logger.warning("Failed to promote bootstrap admin: %s", email)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     logger.info(
@@ -72,6 +104,7 @@ async def lifespan(_app: FastAPI):
         _is_auth_enforced(),
     )
     _validate_runtime_secrets()
+    _bootstrap_admin_account()
     try:
         model_service.ensure_ready()
         logger.info(

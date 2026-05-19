@@ -27,6 +27,6 @@ USER appuser
 EXPOSE ${PORT:-10000}
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT:-10000}/health')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT:-10000}/api-status')" || exit 1
 
 CMD uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-10000}

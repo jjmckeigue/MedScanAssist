@@ -55,6 +55,16 @@ class Settings(BaseSettings):
         alias="CORS_ORIGINS",
     )
 
+    admin_bootstrap_email: str = Field(
+        default="",
+        alias="ADMIN_BOOTSTRAP_EMAIL",
+        description=(
+            "If set, the user registering with this email is created with "
+            "role='admin'. If the user already exists, they are promoted on "
+            "next startup. Leave blank to disable."
+        ),
+    )
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
 
     @property

@@ -190,11 +190,16 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
     token = generate_verification_token()
     expires = _token_expiry()
 
+    bootstrap = (settings.admin_bootstrap_email or "").strip()
+    is_bootstrap_admin = bool(bootstrap) and normalize_email(bootstrap) == body.email
+    role = "admin" if is_bootstrap_admin else "clinician"
+
     try:
         user_service.create(
             email=body.email,
             hashed_password=hashed,
             full_name=body.full_name,
+            role=role,
             verification_token=token,
             verification_token_expires=expires,
         )
@@ -203,6 +208,9 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
             status_code=409,
             detail="A user with this email already exists.",
         ) from exc
+
+    if is_bootstrap_admin:
+        logger.info("Bootstrap admin account created at registration: %s", body.email)
 
     email_sent = send_verification_email(body.email, body.full_name, token)
     logger.info("User registered (pending verification): %s email_sent=%s", body.email, email_sent)
