@@ -53,6 +53,12 @@ async function parseJsonSafely(response) {
   return response.json().catch(() => ({}));
 }
 
+function httpError(message, status) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
 function authHeaders() {
   const token = getAccessToken();
   if (!token) return {};
@@ -123,7 +129,7 @@ async function uploadImage(endpoint, file, query = {}) {
 export const healthCheck = async () => {
   const response = await fetchWithAuth(`${API_BASE_URL}/api-status`, {}, HEALTH_TIMEOUT_MS);
   if (!response.ok) {
-    throw new Error("Health check failed");
+    throw httpError("Health check failed", response.status);
   }
   return parseJsonSafely(response);
 };
@@ -131,7 +137,7 @@ export const healthCheck = async () => {
 export const getModelInfo = async () => {
   const response = await fetchWithAuth(`${API_BASE_URL}/model-info`, {}, HEALTH_TIMEOUT_MS);
   if (!response.ok) {
-    throw new Error("Model info request failed");
+    throw httpError("Model info request failed", response.status);
   }
   return parseJsonSafely(response);
 };

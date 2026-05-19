@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import {
   clearTokens,
   getCurrentUser,
@@ -78,15 +78,16 @@ function App() {
   }, [authed]);
 
   const attemptConnection = useCallback(async () => {
+    // /api-status is the source of truth for connectivity (public, no auth).
+    // /model-info is best-effort enrichment for the status pills + transparency
+    // panel; an auth failure on it does NOT mean the API is down.
     try {
-      const [h, m] = await Promise.all([healthCheck(), getModelInfo()]);
+      const h = await healthCheck();
       setHealth(h);
-      setModelInfo(m);
       setConnectionState("connected");
       setLastRefreshed(new Date());
       retryCount.current = 0;
       if (retryTimer.current) clearTimeout(retryTimer.current);
-      return true;
     } catch {
       retryCount.current += 1;
       if (retryCount.current >= MAX_RETRIES) {
@@ -94,6 +95,19 @@ function App() {
       }
       return false;
     }
+
+    try {
+      const m = await getModelInfo();
+      setModelInfo(m);
+    } catch (err) {
+      if (err?.status !== 401 && err?.status !== 403) {
+        // Real failure (5xx, network, timeout) — surface in logs but keep the
+        // connection banner green; the user can still log in and operate.
+        // eslint-disable-next-line no-console
+        console.warn("model-info fetch failed:", err);
+      }
+    }
+    return true;
   }, []);
 
   useEffect(() => {
@@ -125,17 +139,23 @@ function App() {
   const onRefreshStatus = async () => {
     setRefreshing(true);
     try {
-      const [h, m] = await Promise.all([healthCheck(), getModelInfo()]);
+      const h = await healthCheck();
       setHealth(h);
-      setModelInfo(m);
       setConnectionState("connected");
       setLastRefreshed(new Date());
       retryCount.current = 0;
     } catch {
       setConnectionState("unavailable");
-    } finally {
       setRefreshing(false);
+      return;
     }
+    try {
+      const m = await getModelInfo();
+      setModelInfo(m);
+    } catch {
+      /* best-effort */
+    }
+    setRefreshing(false);
   };
 
   const onRetryConnection = () => {
@@ -350,9 +370,16 @@ function App() {
             />
           }
         />
-        {currentUser?.role === "admin" && (
-          <Route path="/admin" element={<AdminPage />} />
-        )}
+        <Route
+          path="/admin"
+          element={
+            currentUser === null
+              ? <p className="muted" role="status">Loading account…</p>
+              : currentUser.role === "admin"
+                ? <AdminPage />
+                : <Navigate to="/" replace />
+          }
+        />
       </Routes>
     </main>
     </>
