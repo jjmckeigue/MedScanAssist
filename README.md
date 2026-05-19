@@ -39,6 +39,7 @@ This repository demonstrates:
 | Self-serve admin bootstrap via env var | **Implemented** — `ADMIN_BOOTSTRAP_EMAIL` auto-promotes on signup or startup |
 | Persistent storage on Render (SQLite + uploads) | **Implemented** — 1 GB disk mounted at `/app/backend/artifacts/` via `render.yaml` |
 | Rate limiting on auth and admin endpoints | **Implemented** — `slowapi` per-IP limits |
+| Per-account login throttling with auto-lockout | **Implemented** — 5 failed attempts → 15-min lock; resets on success or password reset |
 | Web Analytics for traffic + funnel | **Implemented** — Vercel Web Analytics |
 | Production env hardening (refuses to boot with default JWT secret) | **Implemented** — startup check in `backend/app/main.py` |
 | Eigen-CAM explainability with lung-focus safety warnings | **Implemented** — `/gradcam` and `/analyze` endpoints |
@@ -407,6 +408,15 @@ sessions are stored in the same SQLite database as analysis history.
   `/auth/logout-all`.
 - **Rate limiting**: `slowapi` per-IP limits guard `/auth/login`,
   `/auth/register`, `/auth/forgot-password`, and the entire `/admin/*` surface.
+- **Per-account login throttling**: Independent of IP, an account is locked
+  after `LOGIN_MAX_ATTEMPTS` (default 5) consecutive failed sign-ins within
+  `LOGIN_ATTEMPT_WINDOW_MINUTES` (default 15). Locked accounts return HTTP 429
+  with a `Retry-After` header and a clear "try again in X minutes" message
+  for the duration of `LOGIN_LOCKOUT_MINUTES` (default 15). The counter
+  auto-resets after the window so isolated typos never accumulate, and is
+  cleared on any successful sign-in or password reset. This is what defends
+  against credential stuffing — the IP throttle alone wouldn't stop an
+  attacker rotating IPs against one account.
 - **Role-based admin access**: The `users.role` column gates the `/admin/*`
   routes via the `get_admin_user` dependency. There is no email allowlist in
   code — promotion is an explicit DB write, so the security boundary lives in

@@ -31,6 +31,25 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = Field(default=30, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
     refresh_token_expire_days: int = Field(default=7, alias="REFRESH_TOKEN_EXPIRE_DAYS")
 
+    login_max_attempts: int = Field(
+        default=5,
+        alias="LOGIN_MAX_ATTEMPTS",
+        description="Consecutive failed login attempts allowed before an account is locked.",
+    )
+    login_lockout_minutes: int = Field(
+        default=15,
+        alias="LOGIN_LOCKOUT_MINUTES",
+        description="Minutes a locked account stays locked after exceeding the failed-attempt threshold.",
+    )
+    login_attempt_window_minutes: int = Field(
+        default=15,
+        alias="LOGIN_ATTEMPT_WINDOW_MINUTES",
+        description=(
+            "If the last failed login was more than this many minutes ago, the failure counter "
+            "resets before incrementing. Prevents one-typo-per-day from ever locking a legitimate user."
+        ),
+    )
+
     smtp_host: str = Field(default="smtp.gmail.com", alias="SMTP_HOST")
     smtp_port: int = Field(default=587, alias="SMTP_PORT")
     smtp_user: str = Field(default="", alias="SMTP_USER")

@@ -336,15 +336,68 @@ async def reset_password_endpoint(request: Request, body: ResetPasswordRequest) 
     raise HTTPException(status_code=400, detail="Invalid or expired reset link.")
 
 
+def _format_lockout_message(seconds_remaining: int) -> str:
+    if seconds_remaining >= 60:
+        minutes = (seconds_remaining + 59) // 60
+        unit = "minute" if minutes == 1 else "minutes"
+        return f"Account temporarily locked due to too many failed sign-in attempts. Try again in {minutes} {unit}, or reset your password."
+    return "Account temporarily locked due to too many failed sign-in attempts. Try again shortly, or reset your password."
+
+
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("5/minute")
 async def login(request: Request, body: LoginRequest) -> TokenResponse:
     user = user_service.get_by_email(body.email)
-    if user is None or not verify_password(body.password, user["hashed_password"]):
+    if user is None:
+        # Same response as a wrong password to avoid leaking which emails exist
+        # via this endpoint specifically. Registration already reveals existence,
+        # so this only prevents *one* extra enumeration vector.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
         )
+
+    remaining = user_service.get_lockout_remaining_seconds(user)
+    if remaining > 0:
+        logger.warning(
+            "Blocked login on locked account: %s (%ss remaining)",
+            user["email"],
+            remaining,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=_format_lockout_message(remaining),
+            headers={"Retry-After": str(remaining)},
+        )
+
+    if not verify_password(body.password, user["hashed_password"]):
+        state = user_service.record_failed_login(
+            user["id"],
+            max_attempts=settings.login_max_attempts,
+            lockout_minutes=settings.login_lockout_minutes,
+            attempt_window_minutes=settings.login_attempt_window_minutes,
+        )
+        if state["lockout_seconds_remaining"] > 0:
+            logger.warning(
+                "Account locked after %d failed attempts: %s",
+                state["failed_login_count"],
+                user["email"],
+            )
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=_format_lockout_message(state["lockout_seconds_remaining"]),
+                headers={"Retry-After": str(state["lockout_seconds_remaining"])},
+            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
+        )
+
+    # Password verified — clear any prior failed-attempt state immediately so that
+    # subsequent legitimate logins are unaffected, even if downstream checks below
+    # (is_active / is_verified) reject this particular request.
+    user_service.clear_login_lockout(user["id"])
+
     if not user.get("is_active"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -93,6 +93,7 @@ class UserService:
             )
             self._migrate_add_verification_columns(conn)
             self._migrate_add_password_reset_columns(conn)
+            self._migrate_add_lockout_columns(conn)
             self._migrate_gmail_local_dots(conn)
 
             conn.execute(
@@ -142,6 +143,17 @@ class UserService:
             conn.execute("ALTER TABLE users ADD COLUMN password_reset_token TEXT")
         if "password_reset_expires" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN password_reset_expires TEXT")
+
+    def _migrate_add_lockout_columns(self, conn: sqlite3.Connection) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "failed_login_count" not in cols:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN failed_login_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "last_failed_login_at" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN last_failed_login_at TEXT")
+        if "locked_until" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN locked_until TEXT")
 
     def _migrate_gmail_local_dots(self, conn: sqlite3.Connection) -> None:
         """Align stored emails with Gmail canonical form so login matches regardless of dot placement."""
@@ -305,7 +317,10 @@ class UserService:
                 UPDATE users SET
                     hashed_password = ?,
                     password_reset_token = NULL,
-                    password_reset_expires = NULL
+                    password_reset_expires = NULL,
+                    failed_login_count = 0,
+                    last_failed_login_at = NULL,
+                    locked_until = NULL
                 WHERE id = ? AND password_reset_token = ?
                 """,
                 (new_hashed_password, user_id, raw_token),
@@ -425,6 +440,95 @@ class UserService:
             row = conn.execute("SELECT token_hash FROM revoked_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
         return row is not None
 
+    # ---- Login throttling ----
+
+    def get_lockout_remaining_seconds(self, user: dict) -> int:
+        """Return seconds remaining on the user's lockout, or 0 if not locked."""
+        raw = user.get("locked_until")
+        if not raw:
+            return 0
+        try:
+            locked_until = datetime.fromisoformat(str(raw))
+        except ValueError:
+            return 0
+        delta = (locked_until - datetime.now(tz=timezone.utc)).total_seconds()
+        return int(delta) if delta > 0 else 0
+
+    def record_failed_login(
+        self,
+        user_id: int,
+        *,
+        max_attempts: int,
+        lockout_minutes: int,
+        attempt_window_minutes: int,
+    ) -> dict:
+        """Record a failed login attempt and apply lockout if the threshold is exceeded.
+
+        Returns a dict with the new ``failed_login_count`` and (if applicable)
+        ``lockout_seconds_remaining``. The window restarts if the previous
+        failure was more than ``attempt_window_minutes`` ago, so isolated typos
+        never accumulate.
+        """
+        now = datetime.now(tz=timezone.utc)
+        now_iso = now.isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT failed_login_count, last_failed_login_at FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+            if row is None:
+                return {"failed_login_count": 0, "lockout_seconds_remaining": 0}
+
+            count = int(row["failed_login_count"] or 0)
+            last_raw = row["last_failed_login_at"]
+            window_expired = False
+            if last_raw:
+                try:
+                    last_dt = datetime.fromisoformat(str(last_raw))
+                    window_expired = (now - last_dt).total_seconds() > attempt_window_minutes * 60
+                except ValueError:
+                    window_expired = True
+            count = 1 if window_expired or count <= 0 else count + 1
+
+            locked_until_iso: str | None = None
+            if count >= max_attempts:
+                locked_until_iso = (now + timedelta(minutes=lockout_minutes)).isoformat()
+
+            conn.execute(
+                """
+                UPDATE users
+                   SET failed_login_count = ?,
+                       last_failed_login_at = ?,
+                       locked_until = COALESCE(?, locked_until)
+                 WHERE id = ?
+                """,
+                (count, now_iso, locked_until_iso, user_id),
+            )
+            conn.commit()
+
+        remaining = 0
+        if locked_until_iso:
+            remaining = max(0, int((datetime.fromisoformat(locked_until_iso) - now).total_seconds()))
+        return {
+            "failed_login_count": count,
+            "lockout_seconds_remaining": remaining,
+        }
+
+    def clear_login_lockout(self, user_id: int) -> None:
+        """Reset all failed-login state after a successful login or password reset."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE users
+                   SET failed_login_count = 0,
+                       last_failed_login_at = NULL,
+                       locked_until = NULL
+                 WHERE id = ?
+                """,
+                (user_id,),
+            )
+            conn.commit()
+
     # ---- Admin aggregates ----
 
     def get_user_stats(self) -> dict:
@@ -507,6 +611,9 @@ class UserService:
             "verification_token_expires": row["verification_token_expires"],
             "password_reset_token": row["password_reset_token"] if "password_reset_token" in keys else None,
             "password_reset_expires": row["password_reset_expires"] if "password_reset_expires" in keys else None,
+            "failed_login_count": int(row["failed_login_count"]) if "failed_login_count" in keys and row["failed_login_count"] is not None else 0,
+            "last_failed_login_at": row["last_failed_login_at"] if "last_failed_login_at" in keys else None,
+            "locked_until": row["locked_until"] if "locked_until" in keys else None,
         }
 
 
