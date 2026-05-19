@@ -1086,6 +1086,14 @@ button.ghost.danger-ghost:hover:not(:disabled) {
   margin: 0;
 }
 
+.clinical-disclaimer .demo-notice {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed #e4caa0;
+  font-size: 0.85rem;
+  color: #7a5a18;
+}
+
 .disclaimer-details {
   margin-top: 0.5rem;
 }

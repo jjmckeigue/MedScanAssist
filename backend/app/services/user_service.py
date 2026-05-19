@@ -425,6 +425,72 @@ class UserService:
             row = conn.execute("SELECT token_hash FROM revoked_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
         return row is not None
 
+    # ---- Admin aggregates ----
+
+    def get_user_stats(self) -> dict:
+        """Aggregate counts for the admin dashboard. No PII returned here."""
+        now = datetime.now(tz=timezone.utc)
+        cutoff_7d = (now - timedelta(days=7)).isoformat()
+        cutoff_30d = (now - timedelta(days=30)).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active,
+                    SUM(CASE WHEN is_verified = 1 THEN 1 ELSE 0 END) AS verified,
+                    SUM(CASE WHEN created_at_utc >= ? THEN 1 ELSE 0 END) AS signups_7d,
+                    SUM(CASE WHEN created_at_utc >= ? THEN 1 ELSE 0 END) AS signups_30d
+                FROM users
+                """,
+                (cutoff_7d, cutoff_30d),
+            ).fetchone()
+        return {
+            "total_users": int(row["total"] or 0),
+            "active_users": int(row["active"] or 0),
+            "verified_users": int(row["verified"] or 0),
+            "signups_last_7d": int(row["signups_7d"] or 0),
+            "signups_last_30d": int(row["signups_30d"] or 0),
+        }
+
+    def list_users_admin(self, limit: int = 50, offset: int = 0) -> list[dict]:
+        """Return a paginated list of users for the admin view (no password hashes)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, email, full_name, role, created_at_utc, is_active, is_verified
+                FROM users
+                ORDER BY datetime(created_at_utc) DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            ).fetchall()
+        return [
+            {
+                "id": int(r["id"]),
+                "email": str(r["email"]),
+                "full_name": str(r["full_name"]),
+                "role": str(r["role"]),
+                "created_at_utc": str(r["created_at_utc"]),
+                "is_active": bool(r["is_active"]),
+                "is_verified": bool(r["is_verified"]),
+            }
+            for r in rows
+        ]
+
+    def promote_to_admin(self, email: str) -> dict | None:
+        """Set the user's role to 'admin'. Returns the updated user dict (no password) or None."""
+        email_norm = normalize_email(email)
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE users SET role = 'admin' WHERE email = ?",
+                (email_norm,),
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                return None
+        return self.get_by_email(email_norm)
+
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict:
         keys = set(row.keys())

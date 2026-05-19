@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import math
 from pathlib import Path
@@ -226,6 +226,55 @@ class HistoryService:
             "feedback_accuracy": round(correct / reviewed, 4) if reviewed > 0 else None,
         }
 
+
+    def get_admin_scan_stats(self) -> dict:
+        """Aggregate scan counts for the admin dashboard. No filenames or PHI returned."""
+        now = datetime.now(tz=timezone.utc)
+        cutoff_24h = (now - timedelta(days=1)).isoformat()
+        cutoff_7d = (now - timedelta(days=7)).isoformat()
+        cutoff_30d = (now - timedelta(days=30)).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN created_at_utc >= ? THEN 1 ELSE 0 END) AS scans_24h,
+                    SUM(CASE WHEN created_at_utc >= ? THEN 1 ELSE 0 END) AS scans_7d,
+                    SUM(CASE WHEN created_at_utc >= ? THEN 1 ELSE 0 END) AS scans_30d,
+                    SUM(CASE WHEN LOWER(predicted_label) = 'pneumonia' THEN 1 ELSE 0 END) AS pneumonia_count,
+                    SUM(CASE WHEN LOWER(predicted_label) = 'normal' THEN 1 ELSE 0 END) AS normal_count,
+                    SUM(CASE WHEN feedback = 'correct' THEN 1 ELSE 0 END) AS feedback_correct,
+                    SUM(CASE WHEN feedback = 'incorrect' THEN 1 ELSE 0 END) AS feedback_incorrect
+                FROM analysis_history
+                """,
+                (cutoff_24h, cutoff_7d, cutoff_30d),
+            ).fetchone()
+        return {
+            "total_scans": int(row["total"] or 0),
+            "scans_last_24h": int(row["scans_24h"] or 0),
+            "scans_last_7d": int(row["scans_7d"] or 0),
+            "scans_last_30d": int(row["scans_30d"] or 0),
+            "pneumonia_count": int(row["pneumonia_count"] or 0),
+            "normal_count": int(row["normal_count"] or 0),
+            "feedback_correct": int(row["feedback_correct"] or 0),
+            "feedback_incorrect": int(row["feedback_incorrect"] or 0),
+        }
+
+    def get_scans_per_day(self, days: int = 14) -> list[dict]:
+        """Daily scan counts for the last *days* days (UTC). Used by the admin chart."""
+        cutoff = (datetime.now(tz=timezone.utc) - timedelta(days=days)).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT substr(created_at_utc, 1, 10) AS day, COUNT(*) AS count
+                FROM analysis_history
+                WHERE created_at_utc >= ?
+                GROUP BY day
+                ORDER BY day ASC
+                """,
+                (cutoff,),
+            ).fetchall()
+        return [{"day": str(r["day"]), "count": int(r["count"])} for r in rows]
 
     def get_drift_report(self, baseline_count: int = 200, recent_count: int = 50) -> dict:
         """Compute Population Stability Index (PSI) between baseline and recent predictions."""

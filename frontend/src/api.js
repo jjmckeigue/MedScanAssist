@@ -363,3 +363,33 @@ export const deactivateAccount = async () => {
   }
   return parseJsonSafely(response);
 };
+
+// ---- Admin API ----
+
+export const getAdminStats = async () => {
+  const response = await fetchWithAuth(`${API_BASE_URL}/admin/stats`);
+  if (!response.ok) {
+    const payload = await parseJsonSafely(response);
+    throw new Error(payload.detail || "Could not load admin stats");
+  }
+  return parseJsonSafely(response);
+};
+
+export const getAdminUsers = async (limit = 50, offset = 0) => {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const response = await fetchWithAuth(`${API_BASE_URL}/admin/users?${params}`);
+  if (!response.ok) {
+    const payload = await parseJsonSafely(response);
+    throw new Error(payload.detail || "Could not load admin users");
+  }
+  return parseJsonSafely(response);
+};
+
+export const getAdminActivity = async (days = 14) => {
+  const response = await fetchWithAuth(`${API_BASE_URL}/admin/activity?days=${days}`);
+  if (!response.ok) {
+    const payload = await parseJsonSafely(response);
+    throw new Error(payload.detail || "Could not load admin activity");
+  }
+  return parseJsonSafely(response);
+};

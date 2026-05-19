@@ -120,3 +120,18 @@ async def get_current_user_optional(
     if user is None or not user.get("is_active"):
         return None
     return user
+
+
+async def get_admin_user(current_user: dict = Depends(get_current_user)) -> dict:
+    """FastAPI dependency that requires an authenticated user with role == 'admin'.
+
+    Reuses ``get_current_user`` so the same JWT verification path is enforced; only
+    the role check is added. Do NOT compare emails here — promote/demote via the
+    ``role`` column so access is centralized in one place.
+    """
+    if str(current_user.get("role", "")).lower() != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator privileges required.",
+        )
+    return current_user

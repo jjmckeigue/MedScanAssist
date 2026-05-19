@@ -10,6 +10,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from backend.app.config import settings
+from backend.app.routes.admin import router as admin_router
 from backend.app.routes.analyze import router as analyze_router
 from backend.app.routes.auth import router as auth_router
 from backend.app.routes.gradcam import router as gradcam_router
@@ -30,6 +31,39 @@ logger = logging.getLogger("medscanassist")
 limiter = Limiter(key_func=get_remote_address)
 
 
+_DEFAULT_JWT_SECRETS = {
+    "change-me-in-production",
+    "change-me-generate-a-long-random-string",
+}
+
+
+def _validate_runtime_secrets() -> None:
+    """Refuse to boot in staging/production with insecure default secrets."""
+    env = settings.app_env.lower()
+    is_prod_like = env in {"production", "staging"}
+
+    secret = (settings.jwt_secret_key or "").strip()
+    if secret in _DEFAULT_JWT_SECRETS or len(secret) < 32:
+        message = (
+            "JWT_SECRET_KEY is using a default or weak value "
+            "(must be a random string of at least 32 characters)."
+        )
+        if is_prod_like:
+            logger.critical("Refusing to start: %s", message)
+            raise RuntimeError(message)
+        logger.warning("Insecure config: %s", message)
+
+    if is_prod_like:
+        for origin in settings.cors_origin_list:
+            if "localhost" in origin or "127.0.0.1" in origin:
+                logger.warning(
+                    "CORS_ORIGINS contains a local-dev origin (%s) in env=%s — "
+                    "remove it before exposing the API publicly.",
+                    origin,
+                    env,
+                )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     logger.info(
@@ -37,6 +71,7 @@ async def lifespan(_app: FastAPI):
         settings.app_env,
         _is_auth_enforced(),
     )
+    _validate_runtime_secrets()
     try:
         model_service.ensure_ready()
         logger.info(
@@ -234,6 +269,7 @@ app.include_router(patients_router)
 app.include_router(predict_router)
 app.include_router(analyze_router)
 app.include_router(gradcam_router)
+app.include_router(admin_router)
 
 
 @app.get("/images/{filename}", tags=["images"])
@@ -243,4 +279,8 @@ async def serve_image(filename: str) -> FileResponse:
     path = settings.upload_dir / safe_name
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Image not found.")
-    return FileResponse(path, media_type="image/png")
+    return FileResponse(
+        path,
+        media_type="image/png",
+        headers={"X-Robots-Tag": "noindex, nofollow, noarchive, noimageindex"},
+    )

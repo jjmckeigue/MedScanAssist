@@ -9,6 +9,7 @@ import {
   logoutUser,
 } from "./api";
 import AccountSettingsPage from "./pages/AccountSettingsPage";
+import AdminPage from "./pages/AdminPage";
 import AnalyzePage from "./pages/AnalyzePage";
 import HistoryPage from "./pages/HistoryPage";
 import LoginPage from "./pages/LoginPage";
@@ -201,6 +202,11 @@ function App() {
           All outputs must be independently reviewed by a qualified healthcare professional
           before any clinical decision is made.
         </p>
+        <p className="demo-notice">
+          <strong>Portfolio demonstration.</strong> This is a public showcase project — please do
+          not upload identifiable patient data (PHI). Uploaded images may be used to evaluate
+          model behavior. Use only de-identified or public-domain X-rays.
+        </p>
         <details className="disclaimer-details">
           <summary>Algorithm &amp; validation details</summary>
           <div className="disclaimer-body">
@@ -241,6 +247,11 @@ function App() {
         <NavLink to="/settings" className={({ isActive }) => `tab-button ${isActive ? "active" : ""}`}>
           Account
         </NavLink>
+        {currentUser?.role === "admin" && (
+          <NavLink to="/admin" className={({ isActive }) => `tab-button ${isActive ? "active" : ""}`}>
+            Admin
+          </NavLink>
+        )}
       </nav>
 
       {isConnecting && (
@@ -339,6 +350,9 @@ function App() {
             />
           }
         />
+        {currentUser?.role === "admin" && (
+          <Route path="/admin" element={<AdminPage />} />
+        )}
       </Routes>
     </main>
     </>

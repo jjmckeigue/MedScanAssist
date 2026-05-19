@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /$
+Disallow: /analyze
+Disallow: /history
+Disallow: /patients
+Disallow: /settings
+Disallow: /admin
+Disallow: /verify
+Disallow: /reset-password
